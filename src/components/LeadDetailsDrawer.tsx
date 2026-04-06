@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { LeadData, LeadStatus } from '../types';
 import { useDatabase } from '../context/DatabaseContext';
+import { useWorkspace } from '../context/WorkspaceContext';
+import { requestLeadRecommendation } from '../services/leadAi';
 import { 
   X, 
   Trash2, 
@@ -29,13 +31,17 @@ interface LeadDetailsDrawerProps {
 }
 
 export default function LeadDetailsDrawer({ lead, onClose }: LeadDetailsDrawerProps) {
-  const { updateLead, formatCurrency, getSmartRecommendation } = useDatabase();
+  const { updateLead, formatCurrency, getSmartRecommendation, aiAssistantEnabled, leadGenerationEnabled } = useDatabase();
+  const { currentWorkspace } = useWorkspace();
   const [notes, setNotes] = useState(lead?.notes || '');
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingAiRecommendation, setIsLoadingAiRecommendation] = useState(false);
+  const [aiRecommendation, setAiRecommendation] = useState<{ provider: 'openai' | 'google' | 'rules'; summary: string; recommendation: string } | null>(null);
 
   useEffect(() => {
     if (lead) {
       setNotes(lead.notes || '');
+      setAiRecommendation(null);
     }
   }, [lead]);
 
@@ -50,6 +56,61 @@ export default function LeadDetailsDrawer({ lead, onClose }: LeadDetailsDrawerPr
   const updateStatus = (newStatus: LeadStatus) => {
     updateLead(lead.id, { status: newStatus });
   };
+
+  const loadAiRecommendation = async () => {
+    if (!lead) return;
+
+    if (!aiAssistantEnabled || !leadGenerationEnabled) {
+      setAiRecommendation({
+        provider: 'rules',
+        summary: !aiAssistantEnabled
+          ? 'AI Assistant is disabled in Settings, so the lead drawer is using the built-in recommendation.'
+          : 'Lead Generation Support is disabled in Settings, so the lead drawer is using the built-in recommendation.',
+        recommendation: getSmartRecommendation(lead),
+      });
+      return;
+    }
+
+    const workspaceId = currentWorkspace?.id;
+    const storedKeys = workspaceId ? localStorage.getItem(`ads-intel-settings-api-keys:${workspaceId}`) : null;
+    let openAiKey = '';
+    let googleAiKey = '';
+
+    if (storedKeys) {
+      try {
+        const parsed = JSON.parse(storedKeys) as { openAiKey?: string; googleAiKey?: string };
+        openAiKey = parsed.openAiKey?.trim() || '';
+        googleAiKey = parsed.googleAiKey?.trim() || '';
+      } catch {
+        openAiKey = '';
+        googleAiKey = '';
+      }
+    }
+
+    setIsLoadingAiRecommendation(true);
+    const result = await requestLeadRecommendation({ lead, openAiKey, googleAiKey });
+    setIsLoadingAiRecommendation(false);
+
+    if (result.ok) {
+      setAiRecommendation({
+        provider: result.provider,
+        summary: result.summary,
+        recommendation: result.recommendation,
+      });
+      return;
+    }
+
+    setAiRecommendation({
+      provider: 'rules',
+      summary: lead.insight || 'Using the built-in lead recommendation.',
+      recommendation: getSmartRecommendation(lead),
+    });
+  };
+
+  useEffect(() => {
+    if (!lead) return;
+    void loadAiRecommendation();
+  }, [lead?.id, aiAssistantEnabled, leadGenerationEnabled]);
 
   const pipelineStages: { id: LeadStatus; label: string; color: string }[] = [
     { id: 'new', label: 'New', color: 'bg-blue-500' },
@@ -267,7 +328,15 @@ export default function LeadDetailsDrawer({ lead, onClose }: LeadDetailsDrawerPr
                  </div>
                  <h4 className="text-xs font-black uppercase tracking-widest text-primary-container">Intelligence Recommendation</h4>
                </div>
-               <p className="mb-6 text-lg font-bold text-white">{getSmartRecommendation(lead)}</p>
+               <p className="mb-3 text-lg font-bold text-white">
+                 {isLoadingAiRecommendation ? 'Generating recommendation...' : aiRecommendation?.recommendation || getSmartRecommendation(lead)}
+               </p>
+               <p className="mb-5 text-sm text-white/70">
+                 {aiRecommendation?.summary || 'Using lead value, source quality, and conversion signals to decide the best next step.'}
+               </p>
+               <div className="mb-5 inline-flex rounded-full bg-white/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-primary-container">
+                 {aiRecommendation?.provider === 'openai' ? 'OpenAI Recommendation' : aiRecommendation?.provider === 'google' ? 'Google AI Recommendation' : 'Built-in Recommendation'}
+               </div>
                <button 
                   onClick={() => {
                     const nextStageMap: Record<LeadStatus, LeadStatus> = {

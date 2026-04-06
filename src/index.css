@@ -33,6 +33,36 @@
   --radius-3xl: 3rem;
 }
 
+:root {
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --color-background: #0f1720;
+  --color-surface-container-lowest: #16202b;
+  --color-surface-container-low: #1b2733;
+  --color-surface-container: #223140;
+  --color-surface-container-high: #2b3c4f;
+  --color-surface-container-highest: #34485e;
+
+  --color-primary: #334155;
+  --color-primary-container: #d4a84d;
+  --color-on-primary: #ffffff;
+
+  --color-secondary: #f0c36d;
+
+  --color-tertiary: #f4a261;
+  --color-tertiary-container: #3b2418;
+
+  --color-error: #f87171;
+  --color-error-container: #431616;
+
+  --color-on-surface: #f8fafc;
+  --color-on-surface-variant: #b8c3d1;
+  --color-outline-variant: #334155;
+}
+
 @layer base {
   html {
     scroll-behavior: smooth;
@@ -45,6 +75,14 @@
       radial-gradient(circle at top right, rgba(28, 25, 23, 0.05), transparent 22%),
       linear-gradient(180deg, #fbf8f3 0%, #f5f1ea 48%, #f1ebe3 100%);
     min-height: 100vh;
+    transition: background-color 220ms ease, color 220ms ease, background-image 220ms ease;
+  }
+
+  [data-theme='dark'] body {
+    background-image:
+      radial-gradient(circle at top left, rgba(212, 168, 77, 0.14), transparent 24%),
+      radial-gradient(circle at top right, rgba(59, 130, 246, 0.10), transparent 20%),
+      linear-gradient(180deg, #111827 0%, #0f1720 48%, #0b1220 100%);
   }
 }
 
@@ -57,14 +95,42 @@
   background: rgba(255, 251, 245, 0.82);
 }
 
+[data-theme='dark'] .glass-nav {
+  background: rgba(11, 18, 32, 0.78);
+}
+
 .panel-surface {
   background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(249, 244, 236, 0.95));
   border: 1px solid rgba(214, 202, 188, 0.65);
   box-shadow: 0 20px 60px rgba(28, 25, 23, 0.07);
 }
 
+[data-theme='dark'] .panel-surface {
+  background: linear-gradient(180deg, rgba(22, 32, 43, 0.96), rgba(15, 23, 32, 0.94));
+  border: 1px solid rgba(71, 85, 105, 0.55);
+  box-shadow: 0 24px 70px rgba(2, 6, 23, 0.35);
+}
+
 .dark-panel {
   background: linear-gradient(180deg, rgba(28, 25, 23, 0.98), rgba(17, 14, 12, 0.98));
   border: 1px solid rgba(202, 138, 4, 0.18);
   box-shadow: 0 24px 60px rgba(12, 10, 9, 0.22);
+}
+
+[data-theme='dark'] .dark-panel {
+  background: linear-gradient(180deg, rgba(24, 37, 52, 0.98), rgba(11, 18, 32, 0.98));
+  border: 1px solid rgba(212, 168, 77, 0.22);
+}
+
+[data-theme='dark'] input,
+[data-theme='dark'] select,
+[data-theme='dark'] textarea {
+  background-color: rgba(30, 41, 59, 0.72);
+  border-color: rgba(71, 85, 105, 0.92);
+  color: #f8fafc;
+}
+
+[data-theme='dark'] input::placeholder,
+[data-theme='dark'] textarea::placeholder {
+  color: #94a3b8;
 }

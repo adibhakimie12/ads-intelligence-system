@@ -1,0 +1,16 @@
+alter table public.campaign_snapshots
+  add column if not exists delivery text,
+  add column if not exists results_label text,
+  add column if not exists budget numeric(12,2),
+  add column if not exists reach numeric(12,2),
+  add column if not exists impressions numeric(12,2),
+  add column if not exists cost_per_result numeric(12,2),
+  add column if not exists link_ctr numeric(8,2),
+  add column if not exists link_clicks numeric(12,2),
+  add column if not exists cost_per_link_click numeric(12,2),
+  add column if not exists video_views_3s numeric(12,2),
+  add column if not exists hook_rate numeric(8,4),
+  add column if not exists video_views_25 numeric(12,2),
+  add column if not exists video_views_50 numeric(12,2),
+  add column if not exists video_views_75 numeric(12,2),
+  add column if not exists rate_75_vv numeric(8,4);

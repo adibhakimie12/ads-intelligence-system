@@ -1,193 +1,779 @@
-import React from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useDatabase } from '../context/DatabaseContext';
-import { Sparkles, Trophy, ZapOff, MousePointer2, Filter, Plus, FileDown, Rocket } from 'lucide-react';
+import { useWorkspace } from '../context/WorkspaceContext';
+import { useTheme } from '../context/ThemeContext';
+import { requestCreativeSuggestions } from '../services/creativeAi';
+import { evaluateWinningAd, type WinningAdsMetricStatus, type WinningAdsVerdict } from '../services/creativeAnalysis';
+import { Sparkles, Trophy, ZapOff, MousePointer2, Filter, Plus, FileDown, RefreshCcw, Upload, X, Image as ImageIcon, Video, ChevronRight } from 'lucide-react';
 
-const CREATIVE_SUMMARY = [
-  {
-    id: 1,
-    title: 'Top Performer',
-    description: 'High engagement creatives performing well',
-    icon: Trophy,
-    color: 'text-primary',
-    bg: 'bg-primary/10'
-  },
-  {
-    id: 2,
-    title: 'Creative Fatigue',
-    description: 'Some creatives showing performance drop',
-    icon: ZapOff,
-    color: 'text-orange-600',
-    bg: 'bg-orange-100'
-  },
-  {
-    id: 3,
-    title: 'Weak Hooks',
-    description: 'Low engagement in first seconds',
-    icon: MousePointer2,
-    color: 'text-amber-600',
-    bg: 'bg-amber-100'
-  }
-];
+const CREATIVE_FALLBACK_IMAGE = `data:image/svg+xml;utf8,${encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500">
+    <defs>
+      <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+        <stop offset="0%" stop-color="#f8f4ed" />
+        <stop offset="100%" stop-color="#e7ddd0" />
+      </linearGradient>
+    </defs>
+    <rect width="400" height="500" fill="url(#bg)" />
+    <circle cx="200" cy="170" r="78" fill="#d6b690" opacity="0.45" />
+    <rect x="92" y="300" width="216" height="18" rx="9" fill="#392f28" opacity="0.78" />
+    <rect x="122" y="332" width="156" height="14" rx="7" fill="#6b5a4e" opacity="0.56" />
+    <text x="200" y="390" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#221c16">
+      Creative Preview
+    </text>
+  </svg>
+`)}`;
 
-const AIProgressBar = ({ label, value }: { label: string, value: number }) => {
-  const isStrong = value >= 70;
+const AIProgressBar = ({ label, value }: { label: string; value: number }) => {
+  const tone = value >= 70 ? 'bg-blue-600 text-blue-600' : value >= 50 ? 'bg-amber-500 text-amber-600' : 'bg-red-500 text-red-600';
   return (
-    <div className="flex flex-col gap-1.5 mb-2">
-      <div className="flex justify-between text-[11px] tracking-widest uppercase font-bold">
+    <div className="flex flex-col gap-1.5">
+      <div className="flex justify-between text-[11px] font-black uppercase tracking-[0.16em]">
         <span className="text-on-surface-variant">{label}</span>
-        <span className={isStrong ? 'text-blue-600' : 'text-orange-500'}>{value}%</span>
+        <span className={tone.split(' ')[1]}>{Math.round(value)}%</span>
       </div>
-      <div className="h-1.5 w-full bg-surface-container-high rounded-full overflow-hidden">
-        <div 
-          className={`h-full transition-all duration-[800ms] ease-out rounded-full ${isStrong ? 'bg-blue-600' : 'bg-orange-500'}`} 
-          style={{ width: `${value}%` }} 
-        />
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-container-high">
+        <div className={`h-full rounded-full transition-all duration-700 ${tone.split(' ')[0]}`} style={{ width: `${value}%` }} />
       </div>
     </div>
   );
 };
 
+const getStatusStyles = (status: string) => {
+  if (status === 'WINNING') return 'bg-emerald-100/90 text-emerald-800';
+  if (status === 'FATIGUE DETECTED') return 'bg-orange-100/90 text-orange-800';
+  if (status === 'KILL') return 'bg-red-100/90 text-red-800';
+  if (status === 'COLD TEST') return 'bg-slate-200/90 text-slate-700';
+  return 'bg-blue-100/90 text-blue-800';
+};
+
+const getPlatformStyles = (platform?: 'meta' | 'google') =>
+  platform === 'google' ? 'bg-orange-500 text-white' : 'bg-blue-600 text-white';
+
+const getFatigueStyles = (fatigue: 'low' | 'medium' | 'high') =>
+  fatigue === 'low' ? 'bg-blue-500 text-blue-600' : fatigue === 'medium' ? 'bg-orange-500 text-orange-600' : 'bg-red-500 text-red-600';
+
+const getVerdictStyles = (verdict: WinningAdsVerdict) => {
+  if (verdict === 'WINNING') return 'bg-emerald-100/90 text-emerald-800';
+  if (verdict === 'ADJUST') return 'bg-amber-100/90 text-amber-800';
+  if (verdict === 'KILL') return 'bg-red-100/90 text-red-800';
+  return 'bg-slate-200/90 text-slate-700';
+};
+
+const getMetricStatusStyles = (status: WinningAdsMetricStatus) => {
+  if (status === 'pass') return 'text-emerald-500 bg-emerald-500';
+  if (status === 'watch') return 'text-amber-500 bg-amber-500';
+  if (status === 'fail') return 'text-red-500 bg-red-500';
+  return 'text-slate-500 bg-slate-400';
+};
+
+type PlatformFilter = 'all' | 'meta' | 'google' | 'uploaded';
+type StatusFilter = 'all' | 'WINNING' | 'TESTING' | 'FATIGUE DETECTED' | 'KILL' | 'COLD TEST';
+
 export default function CreativesPage() {
-  const { creatives } = useDatabase();
-  const sortedCreatives = [...creatives].sort((a, b) => {
-    const scoreA = a.hook_strength + a.message_clarity + a.cta_presence;
-    const scoreB = b.hook_strength + b.message_clarity + b.cta_presence;
-    return scoreB - scoreA;
+  const { theme } = useTheme();
+  const { creatives, createCreative, syncAdsData, isFetching, formatCurrency, needsFirstSync, aiAssistantEnabled, creativeAnalysisEnabled, leads, profitData } = useDatabase();
+  const { currentWorkspace } = useWorkspace();
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [showFilters, setShowFilters] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [expandedCreativeId, setExpandedCreativeId] = useState<string | null>(null);
+  const [loadingSuggestionId, setLoadingSuggestionId] = useState<string | null>(null);
+  const [liveSuggestions, setLiveSuggestions] = useState<Record<string, { provider: 'openai' | 'google' | 'rules'; summary: string; suggestions: string[] }>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadForm, setUploadForm] = useState({
+    creative_name: '',
+    platform: 'meta' as 'meta' | 'google',
+    media_type: 'image' as 'image' | 'video',
+    preview_url: '',
+    campaign_name: '',
+    adset_name: '',
+    ad_name: '',
   });
 
+  const sortedCreatives = useMemo(
+    () => [...creatives].sort((a, b) => ((b.score || 0) + (b.ROAS || 0) + (b.CTR || 0)) - ((a.score || 0) + (a.ROAS || 0) + (a.CTR || 0))),
+    [creatives]
+  );
+
+  const filteredCreatives = useMemo(() => {
+    return sortedCreatives.filter((creative) => {
+      const matchesPlatform = platformFilter === 'all'
+        ? true
+        : platformFilter === 'uploaded'
+          ? creative.origin === 'uploaded'
+          : creative.platform === platformFilter;
+      const matchesStatus = statusFilter === 'all' ? true : creative.status === statusFilter;
+      return matchesPlatform && matchesStatus;
+    });
+  }, [platformFilter, sortedCreatives, statusFilter]);
+
+  const summaryCards = useMemo(() => {
+    const topPerformer = sortedCreatives[0];
+    const fatigueCount = creatives.filter((creative) => creative.fatigue !== 'low').length;
+    const weakHookCount = creatives.filter((creative) => creative.hook_strength < 60).length;
+
+    return [
+      {
+        id: 'top',
+        title: 'Top Performer',
+        description: topPerformer ? `${topPerformer.creative_name} is currently leading the library.` : 'No winning creative has been detected yet.',
+        icon: Trophy,
+        color: 'text-primary',
+        bg: 'bg-primary/10',
+      },
+      {
+        id: 'fatigue',
+        title: 'Creative Fatigue',
+        description: fatigueCount > 0 ? `${fatigueCount} creatives are showing fatigue risk and need a refresh.` : 'No fatigue warning right now.',
+        icon: ZapOff,
+        color: 'text-orange-600',
+        bg: 'bg-orange-100',
+      },
+      {
+        id: 'hooks',
+        title: 'Weak Hooks',
+        description: weakHookCount > 0 ? `${weakHookCount} creatives need a stronger first-scene hook.` : 'Hooks look healthy across the current library.',
+        icon: MousePointer2,
+        color: 'text-amber-600',
+        bg: 'bg-amber-100',
+      },
+    ];
+  }, [creatives, sortedCreatives]);
+
+  const targetCpl = profitData.CPL > 0 ? profitData.CPL : 20;
+  const maxCpl = targetCpl * 1.5;
+
+  const playbookCounts = useMemo(() => {
+    return creatives.reduce(
+      (totals, creative) => {
+        const linkedLeads = leads.filter((lead) => lead.creative_name === creative.creative_name);
+        const evaluation = evaluateWinningAd({ creative, linkedLeads, targetCpl, maxCpl });
+        totals[evaluation.verdict] += 1;
+        return totals;
+      },
+      { WINNING: 0, ADJUST: 0, KILL: 0, LEARNING: 0 } as Record<WinningAdsVerdict, number>
+    );
+  }, [creatives, leads, targetCpl, maxCpl]);
+
+  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const preview_url = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+      reader.onerror = () => reject(new Error('Failed to read file.'));
+      reader.readAsDataURL(file);
+    });
+
+    setUploadForm((previous) => ({
+      ...previous,
+      creative_name: previous.creative_name || file.name.replace(/\.[^/.]+$/, ''),
+      media_type: file.type.startsWith('video/') ? 'video' : 'image',
+      preview_url,
+    }));
+  };
+
+  const handleCreateCreative = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!uploadForm.creative_name.trim()) {
+      setUploadError('Creative name is required.');
+      return;
+    }
+
+    setUploadError('');
+    setIsSubmitting(true);
+    const created = await createCreative(uploadForm);
+    setIsSubmitting(false);
+
+    if (!created) {
+      setUploadError('Creative upload failed. Please try again.');
+      return;
+    }
+
+    setExpandedCreativeId(created.id);
+    setShowUploadModal(false);
+    setUploadForm({
+      creative_name: '',
+      platform: 'meta',
+      media_type: 'image',
+      preview_url: '',
+      campaign_name: '',
+      adset_name: '',
+      ad_name: '',
+    });
+  };
+
+  const handleDownloadReport = () => {
+    const blob = new Blob([JSON.stringify(filteredCreatives, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'creative-library-report.json';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadSuggestionsForCreative = async (creative: typeof creatives[number]) => {
+    setExpandedCreativeId(creative.id);
+
+    if (!aiAssistantEnabled || !creativeAnalysisEnabled) {
+      setLiveSuggestions((previous) => ({
+        ...previous,
+        [creative.id]: {
+          provider: 'rules',
+          summary: !aiAssistantEnabled
+            ? 'AI Assistant is disabled in Settings, so only the built-in creative guidance is available.'
+            : 'Creative Analysis is disabled in Settings, so only the built-in creative guidance is available.',
+          suggestions: creative.suggestions || [],
+        },
+      }));
+      return;
+    }
+
+    if (liveSuggestions[creative.id] || loadingSuggestionId === creative.id) {
+      return;
+    }
+
+    const workspaceId = currentWorkspace?.id;
+    const storedKeys = workspaceId ? localStorage.getItem(`ads-intel-settings-api-keys:${workspaceId}`) : null;
+    let openAiKey = '';
+    let googleAiKey = '';
+
+    if (storedKeys) {
+      try {
+        const parsed = JSON.parse(storedKeys) as { openAiKey?: string; googleAiKey?: string };
+        openAiKey = parsed.openAiKey?.trim() || '';
+        googleAiKey = parsed.googleAiKey?.trim() || '';
+      } catch {
+        openAiKey = '';
+        googleAiKey = '';
+      }
+    }
+
+    setLoadingSuggestionId(creative.id);
+    const result = await requestCreativeSuggestions({ creative, openAiKey, googleAiKey });
+    setLoadingSuggestionId(null);
+
+    if (result.ok) {
+      setLiveSuggestions((previous) => ({
+        ...previous,
+        [creative.id]: {
+          provider: result.provider,
+          summary: result.summary,
+          suggestions: result.suggestions,
+        },
+      }));
+      return;
+    }
+
+    setLiveSuggestions((previous) => ({
+      ...previous,
+      [creative.id]: {
+        provider: 'rules',
+        summary: creative.analysis_summary || 'Use the current creative metrics to decide the next iteration.',
+        suggestions: creative.suggestions || [],
+      },
+    }));
+  };
+
   return (
-    <main className="mx-auto max-w-[1360px] px-6 lg:px-8">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
-        <div>
+    <main className="mx-auto max-w-[1380px] px-6 lg:px-8">
+      <div className="mb-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+        <div className="max-w-3xl">
           <p className="mb-3 text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Creative Intelligence</p>
-          <h1 className="font-headline text-[3.6rem] font-extrabold leading-tight tracking-[-0.05em] text-on-surface">
-            Creatives Library
-          </h1>
+          <h1 className="font-headline text-[3.6rem] font-extrabold leading-tight tracking-[-0.05em] text-on-surface">Creatives Library</h1>
           <p className="mt-3 text-sm font-medium text-on-surface-variant">
-            Analyze and optimize your top performing visual assets.
+            Review synced creatives from Meta Ads and Google Ads, upload draft assets before launch, and get hook, clarity, CTA, and fatigue signals in one place.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <button className="flex items-center gap-2 rounded-full border border-outline-variant/50 px-5 py-2.5 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high">
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={() => setShowFilters((current) => !current)} className="flex items-center gap-2 rounded-full border border-outline-variant/50 px-5 py-2.5 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high">
             <Filter size={18} />
             Filter
           </button>
-          <button className="flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md transition-all hover:bg-primary/90">
+          <button onClick={() => void syncAdsData('all')} className="flex items-center gap-2 rounded-full border border-outline-variant/50 px-5 py-2.5 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high">
+            <RefreshCcw size={18} className={isFetching ? 'animate-spin' : ''} />
+            {isFetching ? 'Syncing...' : 'Sync Library'}
+          </button>
+          <button onClick={() => setShowUploadModal(true)} className="flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md transition-all hover:bg-primary/90">
             <Plus size={18} />
             Upload Creative
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
-        {CREATIVE_SUMMARY.map((item) => {
+      {showFilters && (
+        <div className="panel-surface mb-8 grid gap-4 rounded-[2rem] p-6 md:grid-cols-2 xl:grid-cols-4">
+          <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+            Platform
+            <select value={platformFilter} onChange={(event) => setPlatformFilter(event.target.value as PlatformFilter)} className="rounded-2xl border border-outline-variant/40 bg-surface px-4 py-3 text-sm font-medium outline-none">
+              <option value="all">All Sources</option>
+              <option value="meta">Meta Ads</option>
+              <option value="google">Google Ads</option>
+              <option value="uploaded">Uploaded Drafts</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+            Status
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} className="rounded-2xl border border-outline-variant/40 bg-surface px-4 py-3 text-sm font-medium outline-none">
+              <option value="all">All Statuses</option>
+              <option value="WINNING">Winning</option>
+              <option value="TESTING">Testing</option>
+              <option value="FATIGUE DETECTED">Fatigue Detected</option>
+              <option value="KILL">Kill</option>
+              <option value="COLD TEST">Cold Test</option>
+            </select>
+          </label>
+          <div className="rounded-[1.5rem] bg-surface-container-high p-4">
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Visible Creatives</p>
+            <p className="mt-2 text-2xl font-black text-on-surface">{filteredCreatives.length}</p>
+          </div>
+          <div className="rounded-[1.5rem] bg-surface-container-high p-4">
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Draft Uploads</p>
+            <p className="mt-2 text-2xl font-black text-on-surface">{creatives.filter((creative) => creative.origin === 'uploaded').length}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-12 grid grid-cols-1 gap-6 md:grid-cols-3">
+        {summaryCards.map((item) => {
           const Icon = item.icon;
           return (
-            <div key={item.id} className="panel-surface flex items-start gap-4 rounded-[2rem] p-6 transition-shadow group hover:shadow-md">
-              <div className={`p-3 rounded-xl ${item.bg} ${item.color}`}>
+            <div key={item.id} className="panel-surface flex items-start gap-4 rounded-[2rem] p-6">
+              <div className={`rounded-xl p-3 ${item.bg} ${item.color}`}>
                 <Icon size={24} />
               </div>
               <div>
-                <h3 className="font-bold text-on-surface mb-1">{item.title}</h3>
-                <p className="text-sm text-on-surface-variant leading-relaxed">
-                  {item.description}
-                </p>
+                <h3 className="font-bold text-on-surface">{item.title}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-on-surface-variant">{item.description}</p>
               </div>
             </div>
           );
         })}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-        {sortedCreatives.map((creative) => (
-          <div key={creative.id} className="panel-surface flex flex-col overflow-hidden rounded-[2rem]">
-            <div className="relative aspect-[4/5] bg-surface-container-low overflow-hidden">
-              <img
-                src={creative.imageUrl || 'https://via.placeholder.com/400x500'}
-                alt={creative.creative_name}
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute top-4 left-4 flex gap-2">
-                <span className={`px-3 py-1.5 rounded-full text-[10px] font-black tracking-widest uppercase shadow-sm border border-black/5 backdrop-blur-md ${
-                  creative.status === 'WINNING' ? 'bg-green-100/90 text-green-800' :
-                  creative.status === 'TESTING' ? 'bg-blue-100/90 text-blue-800' :
-                  creative.status === 'FATIGUE DETECTED' ? 'bg-orange-100/90 text-orange-800' :
-                  creative.status === 'KILL' ? 'bg-red-100/90 text-red-800' :
-                  'bg-surface-container-high/90 text-on-surface'
-                }`}>
-                  {creative.status}
-                </span>
-              </div>
-              {(() => {
-                const name = creative.creative_name.toLowerCase();
-                const isMeta = name.includes('video') || name.includes('meta');
-                const isGoogle = name.includes('image') || name.includes('google');
-                if (!isMeta && !isGoogle) return null;
-                
-                return (
-                  <div className="absolute top-4 right-4 animate-in fade-in duration-500">
-                    <span className={`px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-[0.15em] shadow-sm backdrop-blur-md border border-white/10 ${
-                      isMeta ? 'bg-blue-600/80 text-white' : 'bg-orange-600/80 text-white'
-                    }`}>
-                      {isMeta ? 'Meta' : 'Google'}
-                    </span>
-                  </div>
-                );
-              })()}
+      <section className="panel-surface mb-10 rounded-[2rem] p-7">
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+          <div className="max-w-2xl">
+            <p className="text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Winning Ads Playbook</p>
+            <h2 className="mt-2 text-2xl font-black text-on-surface">Poster and video decisions live where your creative data already lands.</h2>
+            <p className="mt-2 text-sm text-on-surface-variant">
+              This is the best home for your framework because winning ads are judged at the creative level. The app now maps your rules into each creative card and keeps the UI clean.
+            </p>
+          </div>
+          <div className="grid min-w-[280px] grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-[1.4rem] bg-surface-container-high px-4 py-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Winning</p>
+              <p className="mt-2 text-2xl font-black text-emerald-500">{playbookCounts.WINNING}</p>
             </div>
-            <div className="p-8 flex flex-col gap-6 flex-grow">
-              <div>
-                <h3 className="font-bold text-xl mb-6">{creative.creative_name}</h3>
-                <div className="flex flex-col gap-4">
-                  <AIProgressBar label="Hook Strength" value={creative.hook_strength} />
-                  <AIProgressBar label="Message Clarity" value={creative.message_clarity} />
-                  <AIProgressBar label="CTA Presence" value={creative.cta_presence} />
-                </div>
-                <div className="mt-4 flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Creativity Fatigue</span>
-                  <div className="flex items-center gap-1.5">
-                    <div className={`w-2 h-2 rounded-full ${
-                      creative.fatigue === 'low' ? 'bg-blue-500' :
-                      creative.fatigue === 'medium' ? 'bg-orange-500' :
-                      'bg-red-500'
-                    }`} />
-                    <span className={`text-xs font-bold capitalize ${
-                      creative.fatigue === 'low' ? 'text-blue-600' :
-                      creative.fatigue === 'medium' ? 'text-orange-600' :
-                      'text-red-600'
-                    }`}>
-                      {creative.fatigue} fatigue
-                    </span>
-                  </div>
-                </div>
+            <div className="rounded-[1.4rem] bg-surface-container-high px-4 py-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Adjust</p>
+              <p className="mt-2 text-2xl font-black text-amber-500">{playbookCounts.ADJUST}</p>
+            </div>
+            <div className="rounded-[1.4rem] bg-surface-container-high px-4 py-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Kill</p>
+              <p className="mt-2 text-2xl font-black text-red-500">{playbookCounts.KILL}</p>
+            </div>
+            <div className="rounded-[1.4rem] bg-surface-container-high px-4 py-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Learning</p>
+              <p className="mt-2 text-2xl font-black text-slate-500">{playbookCounts.LEARNING}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 xl:grid-cols-3">
+          <div className="rounded-[1.6rem] border border-outline-variant/30 bg-surface px-5 py-5">
+            <p className="text-sm font-black uppercase tracking-[0.16em] text-on-surface">Decision Rules</p>
+            <div className="mt-4 grid gap-3">
+              <div className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                <p className="font-bold text-emerald-500">Winning</p>
+                <p className="mt-1 text-sm text-on-surface-variant">Cost per result reaches target CPL.</p>
               </div>
-              <div className="mt-auto pt-2">
-                <button className="flex w-full items-center justify-center gap-2 rounded-full border border-outline-variant/30 px-4 py-3 text-sm font-bold uppercase tracking-[0.14em] text-primary transition-all hover:border-primary-container/30 hover:bg-primary/5 hover:shadow-sm">
-                  <Sparkles size={16} />
-                  Improve Suggestions
-                </button>
+              <div className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                <p className="font-bold text-amber-500">Adjust</p>
+                <p className="mt-1 text-sm text-on-surface-variant">Cost per result misses target CPL and is getting close to max CPL.</p>
+              </div>
+              <div className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                <p className="font-bold text-red-500">Kill</p>
+                <p className="mt-1 text-sm text-on-surface-variant">Cost per result is already above max CPL.</p>
               </div>
             </div>
           </div>
-        ))}
-      </div>
 
-      <div className="panel-surface mt-24 mb-16 flex flex-col items-center justify-between gap-8 rounded-[2rem] p-10 md:flex-row md:gap-12 md:p-12">
-        <div className="text-center md:text-left">
-          <h2 className="text-3xl font-black font-headline text-on-surface mb-2">Ready to scale?</h2>
-          <p className="text-on-surface-variant font-medium">Your top creatives are performing well this week.</p>
+          <div className="rounded-[1.6rem] border border-outline-variant/30 bg-surface px-5 py-5">
+            <p className="text-sm font-black uppercase tracking-[0.16em] text-on-surface">Poster Checks</p>
+            <div className="mt-4 space-y-3 text-sm text-on-surface-variant">
+              <p>1. Judge after at least 1,000 impressions and before 2,000 impressions.</p>
+              <p>2. CTR (All): 0.8% to 1.0% and above.</p>
+              <p>3. CTR (Link): 1.3% to 1.5% and above.</p>
+              <p>4. Read link clicks and keep cost per link click around RM2.00.</p>
+            </div>
+          </div>
+
+          <div className="rounded-[1.6rem] border border-outline-variant/30 bg-surface px-5 py-5">
+            <p className="text-sm font-black uppercase tracking-[0.16em] text-on-surface">Video Checks</p>
+            <div className="mt-4 space-y-3 text-sm text-on-surface-variant">
+              <p>1. Start with hook rate: 3-sec video views divided by impressions.</p>
+              <p>2. Then check 3 sec, 25%, 50%, and 75% video view depth.</p>
+              <p>3. This page is ready for those checkpoints and shows placeholders until richer ad-level Meta video metrics are synced.</p>
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col sm:flex-row items-center gap-4 w-full md:w-auto">
-          <button className="flex w-full items-center justify-center gap-2 rounded-full border border-outline-variant/50 px-8 py-4 text-sm font-bold uppercase tracking-[0.14em] text-on-surface transition-all hover:bg-surface-container-high sm:w-auto">
+      </section>
+
+      {needsFirstSync && (
+        <div className="panel-surface mb-10 rounded-[2rem] p-8">
+          <p className="text-lg font-black text-on-surface">Your creative library is ready for the first sync.</p>
+          <p className="mt-2 max-w-3xl text-sm text-on-surface-variant">
+            Connect Meta Ads or Google Ads in Settings, then sync the workspace. The system will start creating campaign-linked creative records here, and you can still upload drafts before they go live.
+          </p>
+        </div>
+      )}
+
+      {filteredCreatives.length === 0 ? (
+        <div className="panel-surface mb-16 rounded-[2rem] p-12 text-center">
+          <p className="text-2xl font-black text-on-surface">No creatives match this filter yet.</p>
+          <p className="mx-auto mt-3 max-w-2xl text-sm text-on-surface-variant">
+            Upload a draft creative for pre-launch checking, or sync your Meta and Google campaigns to populate the live library automatically.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button onClick={() => setShowUploadModal(true)} className="rounded-full bg-primary px-6 py-3 text-sm font-bold text-white">Upload Creative</button>
+            <button onClick={() => void syncAdsData('all')} className="rounded-full border border-outline-variant/50 px-6 py-3 text-sm font-bold text-on-surface">Sync Ad Platforms</button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
+          {filteredCreatives.map((creative) => {
+            const fatigueStyles = getFatigueStyles(creative.fatigue);
+            const isExpanded = expandedCreativeId === creative.id;
+            const resolvedSuggestions = liveSuggestions[creative.id]?.suggestions || creative.suggestions || [];
+            const resolvedSummary = liveSuggestions[creative.id]?.summary || creative.analysis_summary || 'Analysis pending';
+            const suggestionProvider = liveSuggestions[creative.id]?.provider;
+            const previewUrl = creative.imageUrl || creative.thumbnailUrl || CREATIVE_FALLBACK_IMAGE;
+            const isVideo = creative.media_type === 'video';
+            const linkedLeads = leads.filter((lead) => lead.creative_name === creative.creative_name);
+            const winningEvaluation = evaluateWinningAd({ creative, linkedLeads, targetCpl, maxCpl });
+            const activeChecklist = isVideo ? winningEvaluation.videoMetrics : winningEvaluation.posterMetrics;
+
+            return (
+              <article key={creative.id} className="panel-surface overflow-hidden rounded-[2rem]">
+                <div className={`relative aspect-[4/5] overflow-hidden ${theme === 'dark' ? 'bg-slate-900' : 'bg-surface-container-low'}`}>
+                  {isVideo && previewUrl !== CREATIVE_FALLBACK_IMAGE ? (
+                    <video src={previewUrl} className="h-full w-full object-cover" muted controls playsInline />
+                  ) : (
+                    <img src={previewUrl} alt={creative.creative_name} className="h-full w-full object-cover" />
+                  )}
+                  <div className="absolute left-4 top-4 flex flex-wrap gap-2">
+                    <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${getStatusStyles(creative.status)}`}>{creative.status}</span>
+                    {creative.origin === 'uploaded' && <span className="rounded-full bg-black/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-white">Draft Upload</span>}
+                  </div>
+                  <div className="absolute right-4 top-4 flex gap-2">
+                    <span className={`rounded-md px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.15em] ${getPlatformStyles(creative.platform)}`}>{creative.platform || 'meta'}</span>
+                    <span className={`rounded-md px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.15em] ${
+                      theme === 'dark' ? 'bg-slate-900/85 text-slate-200' : 'bg-white/85 text-slate-700'
+                    }`}>{isVideo ? 'Video' : 'Image'}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-6 p-7">
+                  <div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-xl font-bold text-on-surface">{creative.creative_name}</h3>
+                        <p className="mt-2 text-sm text-on-surface-variant">
+                          {creative.campaign_name ? `Linked to ${creative.campaign_name}${creative.adset_name ? ` / ${creative.adset_name}` : ''}` : 'Uploaded draft for pre-launch creative review.'}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-surface-container-high px-3 py-2 text-right">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Score</p>
+                        <p className="text-lg font-black text-on-surface">{creative.score || 0}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-3 gap-3">
+                      <div className="rounded-[1.25rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">CTR</p>
+                        <p className="mt-1 text-base font-black text-on-surface">{(creative.CTR || 0).toFixed(2)}%</p>
+                      </div>
+                      <div className="rounded-[1.25rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">ROAS</p>
+                        <p className="mt-1 text-base font-black text-on-surface">{(creative.ROAS || 0).toFixed(2)}x</p>
+                      </div>
+                      <div className="rounded-[1.25rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Spend</p>
+                        <p className="mt-1 text-base font-black text-on-surface">{formatCurrency(creative.spend || 0)}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-4">
+                    <AIProgressBar label="Hook Strength" value={creative.hook_strength} />
+                    <AIProgressBar label="Message Clarity" value={creative.message_clarity} />
+                    <AIProgressBar label="CTA Presence" value={creative.cta_presence} />
+                  </div>
+
+                  <div className="rounded-[1.5rem] bg-surface-container-high px-4 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Creative Fatigue</p>
+                        <p className="mt-1 text-sm font-medium text-on-surface-variant">{resolvedSummary}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className={`h-2.5 w-2.5 rounded-full ${fatigueStyles.split(' ')[0]}`} />
+                        <span className={`text-xs font-bold capitalize ${fatigueStyles.split(' ')[1]}`}>{creative.fatigue} fatigue</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-outline-variant/30 bg-surface px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Winning Ads Verdict</p>
+                        <p className="mt-1 text-sm font-medium text-on-surface-variant">{winningEvaluation.rationale}</p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${getVerdictStyles(winningEvaluation.verdict)}`}>
+                        {winningEvaluation.verdict}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-3 gap-3">
+                      <div className="rounded-[1.2rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Cost / Result</p>
+                        <p className="mt-1 text-sm font-black text-on-surface">
+                          {winningEvaluation.costPerResult !== undefined ? formatCurrency(winningEvaluation.costPerResult) : 'Pending'}
+                        </p>
+                      </div>
+                      <div className="rounded-[1.2rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Target CPL</p>
+                        <p className="mt-1 text-sm font-black text-on-surface">{formatCurrency(winningEvaluation.targetCpl)}</p>
+                      </div>
+                      <div className="rounded-[1.2rem] bg-surface-container-high px-3 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Max CPL</p>
+                        <p className="mt-1 text-sm font-black text-on-surface">{formatCurrency(winningEvaluation.maxCpl)}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3">
+                      {activeChecklist.slice(0, isVideo ? 3 : 4).map((metric) => {
+                        const metricStyles = getMetricStatusStyles(metric.status);
+                        return (
+                          <div key={`${creative.id}-${metric.label}`} className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">{metric.label}</p>
+                                <p className="mt-1 text-sm font-bold text-on-surface">
+                                  {metric.value !== undefined
+                                    ? metric.label.toLowerCase().includes('ctr') || metric.label.toLowerCase().includes('rate')
+                                      ? `${metric.value.toFixed(2)}%`
+                                      : metric.label.toLowerCase().includes('cost')
+                                        ? formatCurrency(metric.value)
+                                        : Number.isInteger(metric.value)
+                                          ? metric.value.toLocaleString()
+                                          : metric.value.toFixed(2)
+                                    : 'Pending sync'}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <div className={`ml-auto h-2.5 w-2.5 rounded-full ${metricStyles.split(' ')[1]}`} />
+                                <p className={`mt-2 text-[11px] font-black uppercase tracking-[0.14em] ${metricStyles.split(' ')[0]}`}>{metric.status}</p>
+                              </div>
+                            </div>
+                            <p className="mt-2 text-xs font-medium text-on-surface-variant">Target: {metric.benchmark}</p>
+                            {metric.note && <p className="mt-1 text-xs text-on-surface-variant">{metric.note}</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      if (isExpanded) {
+                        setExpandedCreativeId(null);
+                        return;
+                      }
+                      void loadSuggestionsForCreative(creative);
+                    }}
+                    disabled={!creativeAnalysisEnabled}
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-outline-variant/30 px-4 py-3 text-sm font-bold uppercase tracking-[0.14em] text-primary transition-all hover:border-primary-container/30 hover:bg-primary/5"
+                  >
+                    <Sparkles size={16} />
+                    {!creativeAnalysisEnabled ? 'Creative Analysis Disabled' : loadingSuggestionId === creative.id ? 'Generating Suggestions...' : isExpanded ? 'Hide Suggestions' : 'Improve Suggestions'}
+                  </button>
+
+                  {isExpanded && (
+                    <div className="rounded-[1.6rem] border border-outline-variant/30 bg-surface px-5 py-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                        <ChevronRight size={18} className="text-primary" />
+                        <p className="text-sm font-black uppercase tracking-[0.16em] text-on-surface">Optimization Suggestions</p>
+                        </div>
+                        <span className="rounded-full bg-surface-container-high px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">
+                          {suggestionProvider === 'openai' ? 'OpenAI' : suggestionProvider === 'google' ? 'Google AI' : 'Built-in'}
+                        </span>
+                      </div>
+                      <div className="mt-4 space-y-3">
+                        {resolvedSuggestions.map((suggestion, index) => (
+                          <div key={`${creative.id}-suggestion-${index}`} className="rounded-[1.2rem] bg-surface-container-high px-4 py-3 text-sm text-on-surface-variant">{suggestion}</div>
+                        ))}
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <div className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Hook Type</p>
+                          <p className="mt-1 text-sm font-bold text-on-surface">{creative.hook_type || 'Direct'}</p>
+                        </div>
+                        <div className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Snapshot Date</p>
+                          <p className="mt-1 text-sm font-bold text-on-surface">{creative.snapshot_date || 'Draft only'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="panel-surface my-20 flex flex-col items-center justify-between gap-6 rounded-[2rem] p-10 md:flex-row">
+        <div className="max-w-2xl text-center md:text-left">
+          <h2 className="font-headline text-3xl font-black text-on-surface">Creative ops should stay connected to live ad performance.</h2>
+          <p className="mt-2 text-sm font-medium text-on-surface-variant">
+            Use uploads to validate new ideas before launch, then sync Meta and Google to watch which creatives are winning, fading, or ready to kill.
+          </p>
+        </div>
+        <div className="flex w-full flex-col gap-3 sm:flex-row md:w-auto">
+          <button onClick={handleDownloadReport} className="flex items-center justify-center gap-2 rounded-full border border-outline-variant/50 px-6 py-4 text-sm font-bold uppercase tracking-[0.14em] text-on-surface transition-all hover:bg-surface-container-high">
             <FileDown size={20} />
             Download Report
           </button>
-          <button className="flex w-full items-center justify-center gap-2 rounded-full bg-primary px-8 py-4 text-sm font-bold uppercase tracking-[0.14em] text-white shadow-[0_8px_30px_rgb(25,28,29,0.12)] transition-all hover:bg-primary/90 hover:shadow-lg sm:w-auto">
-            <Rocket size={20} />
-            Launch Campaign
+          <button onClick={() => void syncAdsData('all')} className="flex items-center justify-center gap-2 rounded-full bg-primary px-6 py-4 text-sm font-bold uppercase tracking-[0.14em] text-white shadow-[0_8px_30px_rgb(25,28,29,0.12)] transition-all hover:bg-primary/90">
+            <RefreshCcw size={20} className={isFetching ? 'animate-spin' : ''} />
+            Sync Ad Creatives
           </button>
         </div>
       </div>
+
+      {showUploadModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10 backdrop-blur-sm">
+          <div className={`w-full max-w-3xl rounded-[2rem] p-6 shadow-2xl ${
+            theme === 'dark' ? 'border border-slate-700 bg-slate-950' : 'bg-[#f8f3ec]'
+          }`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-secondary">Upload Draft Creative</p>
+                <h3 className="mt-2 text-3xl font-black text-on-surface">Pre-check a creative before launch</h3>
+                <p className="mt-2 text-sm text-on-surface-variant">Add an image or video, link it to a campaign if you want, and the library will score the hook, clarity, CTA, and fatigue risk.</p>
+              </div>
+              <button onClick={() => setShowUploadModal(false)} className="rounded-full border border-outline-variant/40 p-2 text-on-surface">
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCreative} className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+              <div className="space-y-4">
+                <button type="button" onClick={() => fileInputRef.current?.click()} className={`flex min-h-[280px] w-full flex-col items-center justify-center rounded-[1.75rem] border border-dashed p-6 text-center ${
+                  theme === 'dark' ? 'border-slate-700 bg-slate-900/70' : 'border-outline-variant/50 bg-white/60'
+                }`}>
+                  {uploadForm.preview_url ? (
+                    uploadForm.media_type === 'video' ? (
+                      <video src={uploadForm.preview_url} className="max-h-[260px] w-full rounded-[1.5rem] object-cover" controls muted playsInline />
+                    ) : (
+                      <img src={uploadForm.preview_url} alt="Creative preview" className="max-h-[260px] w-full rounded-[1.5rem] object-cover" />
+                    )
+                  ) : (
+                    <>
+                      <div className="mb-4 rounded-full bg-primary/10 p-4 text-primary">
+                        <Upload size={28} />
+                      </div>
+                      <p className="text-base font-black text-on-surface">Drop a creative here or choose a file</p>
+                      <p className="mt-2 text-sm text-on-surface-variant">Supports image and video previews for draft analysis.</p>
+                    </>
+                  )}
+                </button>
+                <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleFileSelected} />
+
+                <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                  Creative Name
+                  <input value={uploadForm.creative_name} onChange={(event) => setUploadForm((previous) => ({ ...previous, creative_name: event.target.value }))} placeholder="Meta Winter Offer Hook V2" className={`rounded-2xl border px-4 py-3 outline-none ${
+                    theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                  }`} />
+                </label>
+              </div>
+
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1">
+                  <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                    Platform
+                    <select value={uploadForm.platform} onChange={(event) => setUploadForm((previous) => ({ ...previous, platform: event.target.value as 'meta' | 'google' }))} className={`rounded-2xl border px-4 py-3 outline-none ${
+                      theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                    }`}>
+                      <option value="meta">Meta Ads</option>
+                      <option value="google">Google Ads</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                    Media Type
+                    <select value={uploadForm.media_type} onChange={(event) => setUploadForm((previous) => ({ ...previous, media_type: event.target.value as 'image' | 'video' }))} className={`rounded-2xl border px-4 py-3 outline-none ${
+                      theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                    }`}>
+                      <option value="image">Image</option>
+                      <option value="video">Video</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                  Campaign Name
+                  <input value={uploadForm.campaign_name} onChange={(event) => setUploadForm((previous) => ({ ...previous, campaign_name: event.target.value }))} placeholder="Optional linked campaign" className={`rounded-2xl border px-4 py-3 outline-none ${
+                    theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                  }`} />
+                </label>
+
+                <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                  Ad Set Name
+                  <input value={uploadForm.adset_name} onChange={(event) => setUploadForm((previous) => ({ ...previous, adset_name: event.target.value }))} placeholder="Optional ad set" className={`rounded-2xl border px-4 py-3 outline-none ${
+                    theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                  }`} />
+                </label>
+
+                <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
+                  Ad Name
+                  <input value={uploadForm.ad_name} onChange={(event) => setUploadForm((previous) => ({ ...previous, ad_name: event.target.value }))} placeholder="Optional ad name" className={`rounded-2xl border px-4 py-3 outline-none ${
+                    theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-outline-variant/40 bg-white/80'
+                  }`} />
+                </label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className={`rounded-[1.25rem] px-4 py-4 ${theme === 'dark' ? 'bg-slate-900/80' : 'bg-white/70'}`}>
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Detected Type</p>
+                    <div className="mt-2 flex items-center gap-2 text-sm font-bold text-on-surface">
+                      {uploadForm.media_type === 'video' ? <Video size={16} /> : <ImageIcon size={16} />}
+                      {uploadForm.media_type}
+                    </div>
+                  </div>
+                  <div className={`rounded-[1.25rem] px-4 py-4 ${theme === 'dark' ? 'bg-slate-900/80' : 'bg-white/70'}`}>
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Destination</p>
+                    <p className="mt-2 text-sm font-bold capitalize text-on-surface">{uploadForm.platform} creative library</p>
+                  </div>
+                </div>
+
+                {uploadError && <p className="text-sm font-medium text-red-600">{uploadError}</p>}
+
+                <button type="submit" disabled={isSubmitting} className="w-full rounded-full bg-primary px-6 py-4 text-sm font-bold uppercase tracking-[0.14em] text-white disabled:opacity-60">
+                  {isSubmitting ? 'Analyzing Creative...' : 'Add To Creative Library'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

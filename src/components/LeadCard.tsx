@@ -61,12 +61,12 @@ export default function LeadCard({ lead, onSelect }: LeadCardProps) {
     }
   }, [isMenuOpen]);
 
-  const getScoreIcon = (score: string) => {
+  const getScoreLabel = (score: string) => {
     switch (score) {
-      case 'high': return '🔥';
-      case 'medium': return '⚡';
-      case 'low': return '🧊';
-      default: return '⚡';
+      case 'high': return 'HOT';
+      case 'medium': return 'WARM';
+      case 'low': return 'COLD';
+      default: return 'WARM';
     }
   };
 
@@ -109,7 +109,12 @@ export default function LeadCard({ lead, onSelect }: LeadCardProps) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h4 className="font-bold text-on-surface group-hover:text-primary transition-colors truncate">{lead.name}</h4>
-            <span title={`Lead Score: ${lead.score}`} className="text-sm shrink-0">{getScoreIcon(lead.score)}</span>
+            <span
+              title={`Lead Score: ${lead.score}`}
+              className="shrink-0 rounded-full bg-surface-container-high px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-on-surface-variant"
+            >
+              {getScoreLabel(lead.score)}
+            </span>
           </div>
           <div className="flex flex-col mt-1">
             <div className="flex items-center gap-2">
@@ -132,13 +137,13 @@ export default function LeadCard({ lead, onSelect }: LeadCardProps) {
                 {lead.conversionRate >= 12 && (
                   <>
                     <span className="w-0.5 h-0.5 rounded-full bg-outline-variant/30" />
-                    <span className="text-emerald-500 font-black animate-pulse">🔥 TOP PERFORMER</span>
+                    <span className="text-emerald-500 font-black animate-pulse">TOP PERFORMER</span>
                   </>
                 )}
                 {lead.conversionRate < 3 && (
                   <>
                     <span className="w-0.5 h-0.5 rounded-full bg-outline-variant/30" />
-                    <span className="text-amber-500 font-black tracking-tight">⚠️ LOW CONVERSION</span>
+                    <span className="text-amber-500 font-black tracking-tight">LOW CONVERSION</span>
                   </>
                 )}
               </span>

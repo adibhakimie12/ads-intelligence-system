@@ -1,8 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Navigation from './components/Navigation';
 import Onboarding from './components/Onboarding';
 import UpgradeModal from './components/UpgradeModal';
+import AuthScreen from './components/AuthScreen';
 import { useDatabase } from './context/DatabaseContext';
+import { useAuth } from './context/AuthContext';
+import { useWorkspace } from './context/WorkspaceContext';
+import { getEffectiveWorkspacePlanTier, updateWorkspacePlanTier } from './services/workspacePlan';
 
 // Import Pages
 import DashboardPage from './pages/Dashboard';
@@ -17,15 +21,24 @@ export type PlanTier = 'free' | 'pro';
 export type UpgradeTrigger = 'lead_limit' | 'locked_feature' | 'billing';
 
 export default function App() {
-  const { currentPage } = useDatabase();
+  const { currentPage, leads } = useDatabase();
+  const { user, isLoading, isDemoMode, signOut } = useAuth();
+  const {
+    currentWorkspace,
+    currentMembership,
+    isLoading: isWorkspaceLoading,
+    refreshWorkspaceData,
+  } = useWorkspace();
   const [showOnboarding, setShowOnboarding] = useState(
     () => !localStorage.getItem('ads-intel-onboarded')
   );
-  const [planTier, setPlanTier] = useState<PlanTier>('free');
-  const [leadUsageCount, setLeadUsageCount] = useState(50);
   const [upgradeTrigger, setUpgradeTrigger] = useState<UpgradeTrigger>('billing');
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
+  const [isUpgradingWorkspacePlan, setIsUpgradingWorkspacePlan] = useState(false);
 
+  const planTier = getEffectiveWorkspacePlanTier(currentWorkspace, currentMembership);
+
+  const leadUsageCount = leads.length;
   const leadLimit = planTier === 'free' ? 50 : Infinity;
   const hasReachedLeadLimit = planTier === 'free' && leadUsageCount >= 50;
 
@@ -39,9 +52,60 @@ export default function App() {
     setIsUpgradeModalOpen(true);
   };
 
-  const handleUpgrade = () => {
-    setPlanTier('pro');
-    setLeadUsageCount(132);
+  useEffect(() => {
+    if (!currentWorkspace || !currentMembership || currentMembership.role !== 'owner') {
+      return;
+    }
+
+    if (currentWorkspace.plan_tier === 'pro' || isDemoMode || isUpgradingWorkspacePlan) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const upgradeOwnerWorkspace = async () => {
+      setIsUpgradingWorkspacePlan(true);
+      try {
+        const result = await updateWorkspacePlanTier(currentWorkspace.id, 'pro');
+        if (!cancelled && !result.error) {
+          await refreshWorkspaceData();
+        }
+      } finally {
+        if (!cancelled) {
+          setIsUpgradingWorkspacePlan(false);
+        }
+      }
+    };
+
+    void upgradeOwnerWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentMembership,
+    currentWorkspace,
+    isDemoMode,
+    isUpgradingWorkspacePlan,
+    refreshWorkspaceData,
+  ]);
+
+  const handleUpgrade = async () => {
+    if (!currentWorkspace || isDemoMode) {
+      setIsUpgradeModalOpen(false);
+      return;
+    }
+
+    setIsUpgradingWorkspacePlan(true);
+    try {
+      const result = await updateWorkspacePlanTier(currentWorkspace.id, 'pro');
+      if (!result.error) {
+        await refreshWorkspaceData();
+      }
+    } finally {
+      setIsUpgradingWorkspacePlan(false);
+    }
+
     setIsUpgradeModalOpen(false);
   };
 
@@ -80,6 +144,55 @@ export default function App() {
         return <DashboardPage />;
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div className="panel-surface rounded-[2rem] px-8 py-6 text-center">
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Loading</p>
+          <h1 className="mt-3 font-headline text-2xl font-bold text-on-surface">Preparing your workspace shell</h1>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user && !isDemoMode) {
+    return <AuthScreen />;
+  }
+
+  if (user && !isDemoMode && isWorkspaceLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div className="panel-surface rounded-[2rem] px-8 py-6 text-center">
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Workspace</p>
+          <h1 className="mt-3 font-headline text-2xl font-bold text-on-surface">Loading your workspace</h1>
+        </div>
+      </div>
+    );
+  }
+
+  if (user && !isDemoMode && !currentWorkspace) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div className="panel-surface max-w-xl rounded-[2rem] px-8 py-8 text-center">
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Workspace Required</p>
+          <h1 className="mt-3 font-headline text-2xl font-bold text-on-surface">No workspace was found for this account</h1>
+          <p className="mt-3 text-sm font-medium leading-relaxed text-on-surface-variant">
+            Run the Supabase workspace migration and signup trigger first, then sign out and back in so your first workspace is created automatically.
+          </p>
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="rounded-full bg-primary px-5 py-3 text-sm font-black uppercase tracking-[0.18em] text-white transition-all hover:opacity-95"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (showOnboarding) {
     return <Onboarding onComplete={() => setShowOnboarding(false)} />;

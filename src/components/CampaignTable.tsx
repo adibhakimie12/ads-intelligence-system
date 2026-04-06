@@ -29,24 +29,50 @@ const getRecommendation = (campaign: AdsData) => {
 
 export default function CampaignTable({ 
   campaigns, 
-  showActions = true 
+  getCreativeDriver,
+  showActions = true,
+  onView,
+  onEdit,
+  onDuplicate,
+  onPause,
 }: { 
   campaigns: AdsData[], 
-  showActions?: boolean 
+  getCreativeDriver?: (campaign: AdsData) => {
+    label: string;
+    tone: string;
+    detail?: string;
+  } | null,
+  showActions?: boolean,
+  onView?: (campaign: AdsData) => void,
+  onEdit?: (campaign: AdsData) => void,
+  onDuplicate?: (campaign: AdsData) => void,
+  onPause?: (campaign: AdsData) => void,
 }) {
   return (
     <div className="panel-surface overflow-hidden rounded-[2rem]">
       <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-outline-variant/20 scrollbar-track-transparent">
-        <table className="w-full border-collapse min-w-[1000px]">
+        <table className="w-full border-collapse min-w-[1900px]">
           <thead>
             <tr className="bg-primary/[0.03]">
               <th className="px-8 py-5 text-left text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Campaign Name</th>
               <th className="px-8 py-5 text-left text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Status</th>
               <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Spend</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Reach</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Impressions</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Cost / Result</th>
               <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">CTR</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">CTR Link</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Link Clicks</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">CPC Link</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">3s Plays</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">VV 25%</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">VV 50%</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">VV 75%</th>
+              <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Rate 75% VV</th>
               <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">CPM</th>
               <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">ROAS</th>
               <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Conv.</th>
+              <th className="px-8 py-5 text-center text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Creative Driver</th>
               <th className="px-8 py-5 text-center text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Recommendation</th>
               {showActions && <th className="px-8 py-5 text-right text-[11px] font-bold uppercase tracking-[0.18em] text-on-surface-variant">Actions</th>}
             </tr>
@@ -59,7 +85,12 @@ export default function CampaignTable({
                 getStatusStyles={getStatusStyles}
                 getDynamicStatus={getDynamicStatus}
                 getRecommendation={getRecommendation}
+                getCreativeDriver={getCreativeDriver}
                 showActions={showActions}
+                onView={onView}
+                onEdit={onEdit}
+                onDuplicate={onDuplicate}
+                onPause={onPause}
               />
             ))}
           </tbody>
