@@ -43,6 +43,27 @@ const severityWeight = {
   performance: 1,
 } as const;
 
+const EXISTING_POST_PATTERN = /\s*\[Existing Post ([^\]]+)\]\s*$/i;
+const LONG_TOKEN_PATTERN = /(?:^|\s)([a-f0-9]{24,}|[A-Za-z0-9_-]{28,})(?=\s|$)/g;
+
+const cleanCreativeTitle = (value: string) =>
+  value
+    .replace(EXISTING_POST_PATTERN, '')
+    .replace(LONG_TOKEN_PATTERN, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+const looksLikePlayableVideoUrl = (value?: string) =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && !/\.(jpg|jpeg|png|webp|gif|bmp|svg)(\?|$)/i.test(value);
+
+const isLikelyVideoCreative = (creative: { media_type?: 'image' | 'video'; imageUrl?: string; thumbnailUrl?: string; creative_name: string; ad_name?: string }) =>
+  creative.media_type === 'video'
+  || looksLikePlayableVideoUrl(creative.imageUrl)
+  || looksLikePlayableVideoUrl(creative.thumbnailUrl)
+  || /\b(video|reel|story|clip|ugc)\b/i.test(`${creative.creative_name} ${creative.ad_name || ''}`);
+
 const getPlatformStyles = (platform?: 'meta' | 'google') =>
   platform === 'meta'
     ? 'bg-blue-100 text-blue-700'
@@ -118,8 +139,8 @@ export default function InsightsPage() {
       return { creative, evaluation };
     });
 
-    const posters = evaluated.filter((item) => item.creative.media_type !== 'video');
-    const videos = evaluated.filter((item) => item.creative.media_type === 'video');
+    const posters = evaluated.filter((item) => !isLikelyVideoCreative(item.creative));
+    const videos = evaluated.filter((item) => isLikelyVideoCreative(item.creative));
 
     const topPoster = posters
       .filter((item) => item.evaluation.verdict === 'WINNING')
@@ -146,46 +167,46 @@ export default function InsightsPage() {
     {
       id: 'ads-signal',
       category: 'ads' as const,
-      title: 'Ads Performance',
-      label: adsData.some((campaign) => campaign.CPM > 25) ? 'CPM High' : 'Stable Costs',
+      title: 'Ads Cost Health',
+      label: adsData.some((campaign) => campaign.CPM > 25) ? 'Needs Attention' : 'Healthy',
       status: adsData.some((campaign) => campaign.CPM > 25) ? 'alert' : 'good',
       description: adsData.some((campaign) => campaign.CPM > 25)
-        ? 'At least one campaign is running above the CPM comfort zone and may need audience refinement.'
-        : 'Current campaign CPM levels are within the expected working range.',
-      action: 'Review CPM',
+        ? 'At least one campaign is running with expensive delivery and may need audience, placement, or budget adjustment.'
+        : 'Current campaign cost levels are still inside the expected working range.',
+      action: 'Review campaign costs',
     },
     {
       id: 'creative-signal',
       category: 'creative' as const,
-      title: 'Creative Quality',
-      label: adsData.some((campaign) => campaign.CTR < 1) ? 'Hook Weak' : 'Healthy CTR',
+      title: 'Creative Hook Health',
+      label: adsData.some((campaign) => campaign.CTR < 1) ? 'Needs Attention' : 'Healthy',
       status: adsData.some((campaign) => campaign.CTR < 1) ? 'warning' : 'good',
       description: adsData.some((campaign) => campaign.CTR < 1)
-        ? 'Some campaigns are under 1% CTR, which usually points to weaker hooks or creative fatigue.'
+        ? 'Some campaigns are under 1% CTR, which usually means the hook, angle, or creative fatigue needs work.'
         : 'CTR signals look healthy across the current campaign set.',
-      action: 'Check Creatives',
+      action: 'Check creatives',
     },
     {
       id: 'funnel-signal',
       category: 'funnel' as const,
-      title: 'Funnel / Website',
-      label: insights.some((insight) => insight.type === 'funnel') ? 'Needs Review' : 'No Funnel Alerts',
+      title: 'Landing Page Health',
+      label: insights.some((insight) => insight.type === 'funnel') ? 'Needs Attention' : 'Healthy',
       status: insights.some((insight) => insight.type === 'funnel') ? 'warning' : 'good',
       description: insights.some((insight) => insight.type === 'funnel')
-        ? 'A funnel-specific insight was generated and should be reviewed before scaling spend.'
-        : 'No active funnel issues are currently being surfaced by the insight layer.',
-      action: 'Inspect Funnel',
+        ? 'The system detected a possible landing-page or conversion-path issue that should be reviewed before scaling.'
+        : 'No active landing-page or funnel issues are being surfaced right now.',
+      action: 'Inspect landing page',
     },
     {
       id: 'sales-signal',
       category: 'sales' as const,
-      title: 'Sales / WhatsApp',
-      label: insights.some((insight) => insight.type === 'sales') ? 'Sales Insight' : 'Quiet',
+      title: 'Sales Follow-up Health',
+      label: insights.some((insight) => insight.type === 'sales') ? 'Needs Attention' : 'Healthy',
       status: insights.some((insight) => insight.type === 'sales') ? 'alert' : 'good',
       description: insights.some((insight) => insight.type === 'sales')
-        ? 'Sales-related insights are active, which usually means closing efficiency or lead quality needs attention.'
+        ? 'Sales-side signals suggest lead quality, response speed, or closing efficiency needs attention.'
         : 'No urgent sales-side issues are being highlighted right now.',
-      action: 'Review Sales',
+      action: 'Review sales flow',
     },
   ]), [adsData, insights]);
 
@@ -293,7 +314,7 @@ export default function InsightsPage() {
                   <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Winning Poster</p>
                   {winningAdsSummary.topPoster ? (
                     <>
-                      <p className="mt-3 text-lg font-bold text-on-surface">{winningAdsSummary.topPoster.creative.creative_name}</p>
+                      <p className="mt-3 text-lg font-bold text-on-surface">{cleanCreativeTitle(winningAdsSummary.topPoster.creative.creative_name)}</p>
                       <p className="mt-2 text-sm text-on-surface-variant">{winningAdsSummary.topPoster.evaluation.rationale}</p>
                       <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-on-surface-variant">
                         <span>{winningAdsSummary.topPoster.evaluation.verdict}</span>
@@ -310,7 +331,7 @@ export default function InsightsPage() {
                   <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Winning Video</p>
                   {winningAdsSummary.topVideo ? (
                     <>
-                      <p className="mt-3 text-lg font-bold text-on-surface">{winningAdsSummary.topVideo.creative.creative_name}</p>
+                      <p className="mt-3 text-lg font-bold text-on-surface">{cleanCreativeTitle(winningAdsSummary.topVideo.creative.creative_name)}</p>
                       <p className="mt-2 text-sm text-on-surface-variant">{winningAdsSummary.topVideo.evaluation.rationale}</p>
                       <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-on-surface-variant">
                         <span>{winningAdsSummary.topVideo.evaluation.verdict}</span>
@@ -335,7 +356,7 @@ export default function InsightsPage() {
                       <div className="mt-3 space-y-3">
                         {winningAdsSummary.needsAdjust.map((item) => (
                           <div key={`adjust-${item.creative.id}`} className="text-sm text-on-surface-variant">
-                            <p className="font-bold text-on-surface">{item.creative.creative_name}</p>
+                            <p className="font-bold text-on-surface">{cleanCreativeTitle(item.creative.creative_name)}</p>
                             <p>{item.evaluation.rationale}</p>
                           </div>
                         ))}
@@ -351,7 +372,7 @@ export default function InsightsPage() {
                       <div className="mt-3 space-y-3">
                         {winningAdsSummary.needsKill.map((item) => (
                           <div key={`kill-${item.creative.id}`} className="text-sm text-on-surface-variant">
-                            <p className="font-bold text-on-surface">{item.creative.creative_name}</p>
+                            <p className="font-bold text-on-surface">{cleanCreativeTitle(item.creative.creative_name)}</p>
                             <p>{item.evaluation.rationale}</p>
                           </div>
                         ))}
@@ -489,7 +510,7 @@ export default function InsightsPage() {
                         <p className={`text-[10px] font-black uppercase tracking-[0.18em] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Creative Evidence</p>
                         {selectedEvidence.linkedCreative ? (
                           <div className={`mt-3 grid gap-2 text-sm ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
-                            <p className={`font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{selectedEvidence.linkedCreative.creative_name}</p>
+                            <p className={`font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{cleanCreativeTitle(selectedEvidence.linkedCreative.creative_name)}</p>
                             <p>Status: {selectedEvidence.linkedCreative.status}</p>
                             <p>Hook Strength: {selectedEvidence.linkedCreative.hook_strength}%</p>
                             <p>Message Clarity: {selectedEvidence.linkedCreative.message_clarity}%</p>
@@ -520,7 +541,7 @@ export default function InsightsPage() {
               </div>
 
               <div className="panel-surface rounded-[2rem] p-8">
-                <h2 className="text-xl font-bold font-headline text-on-surface">Quick Performance Signals</h2>
+                <h2 className="text-xl font-bold font-headline text-on-surface">Quick Health Check</h2>
                 <div className="mt-5 space-y-4">
                   {quickSignals.map((signal) => {
                     const Icon = quickSignalIconMap[signal.category];
@@ -540,6 +561,7 @@ export default function InsightsPage() {
                             <div>
                               <p className={`text-sm font-semibold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{signal.title}</p>
                               <p className={`mt-1 text-xs leading-relaxed ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>{signal.description}</p>
+                              <p className={`mt-2 text-[11px] font-bold uppercase tracking-[0.14em] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>{signal.action}</p>
                             </div>
                           </div>
                           <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] ${tone}`}>
@@ -620,7 +642,7 @@ export default function InsightsPage() {
 
                         <div className="mt-5 space-y-2 text-xs font-semibold text-on-surface-variant">
                           <p>Campaign: {evidence.linkedCampaign?.campaign_name || 'Not linked yet'}</p>
-                          <p>Creative: {evidence.linkedCreative?.creative_name || 'Not linked yet'}</p>
+                          <p>Creative: {evidence.linkedCreative ? cleanCreativeTitle(evidence.linkedCreative.creative_name) : 'Not linked yet'}</p>
                           <p>Lead quality: {evidence.relatedLeads.length > 0 ? `${evidence.highQualityLeads}/${evidence.relatedLeads.length} high quality` : 'No lead data'}</p>
                         </div>
 

@@ -127,3 +127,59 @@ export const buildCreativeSnapshotsFromCampaigns = (workspaceId, campaigns, plat
       snapshot_date: snapshotDate,
     };
   });
+
+export const buildCreativeSnapshotsFromAds = (workspaceId, ads, platform, snapshotDate) =>
+  ads.map((ad) => {
+    const analysis = analyzeCreative({
+      creativeName: ad.creativeName,
+      campaignName: ad.campaignName,
+      platform,
+      mediaType: ad.mediaType,
+      ctr: ad.ctr,
+      roas: 0,
+      spend: ad.spend,
+    });
+
+    return {
+      workspace_id: workspaceId,
+      source_platform: platform,
+      origin: 'synced',
+      creative_name: ad.creativeName,
+      campaign_name: ad.campaignName,
+      campaign_external_id: ad.campaignId,
+      adset_name: ad.adsetName,
+      ad_name: ad.adName,
+      creative_external_id: ad.creativeId || `${platform}_${ad.adId}`,
+      media_type: ad.mediaType,
+      preview_url: ad.previewUrl,
+      thumbnail_url: ad.thumbnailUrl,
+      hook_type: analysis.hookType,
+      status: analysis.status,
+      score: analysis.score,
+      ctr: ad.ctr,
+      link_ctr: ad.linkCtr ?? null,
+      roas: 0,
+      spend: ad.spend,
+      impressions: ad.impressions ?? null,
+      link_clicks: ad.linkClicks ?? null,
+      cost_per_link_click: ad.costPerLinkClick ?? null,
+      cost_per_result: ad.costPerResult ?? null,
+      target_cpl: null,
+      max_cpl: null,
+      hook_rate: ad.hookRate ?? null,
+      video_views_3s: ad.videoViews3s ?? null,
+      video_views_25: ad.videoViews25 ?? null,
+      video_views_50: ad.videoViews50 ?? null,
+      video_views_75: ad.videoViews75 ?? null,
+      hook_strength: analysis.hookStrength,
+      message_clarity: analysis.messageClarity,
+      cta_presence: analysis.ctaPresence,
+      fatigue: analysis.fatigue,
+      analysis_summary: ad.existingPostId
+        ? `${analysis.summary} This ad is linked to an existing Meta post (${ad.existingPostId}).`
+        : analysis.summary,
+      ai_verdict: analysis.summary,
+      suggestions: analysis.suggestions,
+      snapshot_date: snapshotDate,
+    };
+  });

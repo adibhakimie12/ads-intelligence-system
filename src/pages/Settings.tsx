@@ -2183,7 +2183,69 @@ export default function SettingsPage({
               title="Billing & Plan"
               description="Plan visibility, usage, and upgrade actions for this workspace"
             >
-              <div className={`rounded-[2rem] border px-5 py-5 ${
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className={`rounded-[2rem] border px-5 py-5 ${
+                  theme === 'dark' ? 'border-slate-700 bg-slate-900/75' : 'border-slate-200 bg-slate-50'
+                }`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Free Plan</p>
+                      <h3 className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>RM 0</h3>
+                      <p className={`mt-1 text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Setup, testing, and lighter usage</p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] ${
+                      isFreePlan
+                        ? 'bg-slate-900 text-white'
+                        : theme === 'dark'
+                          ? 'bg-slate-800 text-slate-300'
+                          : 'bg-white text-slate-500'
+                    }`}>
+                      {isFreePlan ? 'Current' : 'Available'}
+                    </span>
+                  </div>
+
+                  <ul className={`mt-4 space-y-2 text-xs ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                    <li>50 leads included</li>
+                    <li>Basic creative and campaign monitoring</li>
+                    <li>Good for onboarding and initial testing</li>
+                  </ul>
+                </div>
+
+                <div className={`rounded-[2rem] border px-5 py-5 ${
+                  !isFreePlan
+                    ? theme === 'dark'
+                      ? 'border-indigo-500 bg-indigo-950/20'
+                      : 'border-indigo-400 bg-indigo-50'
+                    : theme === 'dark'
+                      ? 'border-slate-700 bg-slate-900/75'
+                      : 'border-slate-200 bg-slate-50'
+                }`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-indigo-500">Pro Plan</p>
+                      <h3 className={`mt-2 text-2xl font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>RM 99<span className={`ml-1 text-sm font-bold ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>/month</span></h3>
+                      <p className={`mt-1 text-sm ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>For scaling with AI, automation, and deeper reporting</p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] ${
+                      !isFreePlan
+                        ? 'bg-indigo-600 text-white'
+                        : theme === 'dark'
+                          ? 'bg-slate-800 text-slate-300'
+                          : 'bg-white text-slate-500'
+                    }`}>
+                      {!isFreePlan ? 'Current' : 'Upgrade'}
+                    </span>
+                  </div>
+
+                  <ul className={`mt-4 space-y-2 text-xs ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                    <li>Unlimited leads</li>
+                    <li>AI recommendations and automation rules</li>
+                    <li>Advanced analytics and priority support</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className={`mt-4 rounded-[2rem] border px-5 py-5 ${
                 theme === 'dark' ? 'border-slate-700 bg-slate-900/75' : 'border-slate-200 bg-slate-50'
               }`}>
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

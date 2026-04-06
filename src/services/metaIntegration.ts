@@ -182,6 +182,19 @@ const getAccessToken = async (): Promise<string> => {
   return accessToken;
 };
 
+const readJsonResponse = async (response: Response): Promise<any> => {
+  const raw = await response.text();
+  if (!raw) {
+    throw new Error('The local API returned an empty response.');
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`The local API returned invalid JSON (status ${response.status}).`);
+  }
+};
+
 export const beginMetaConnection = async (workspaceId: string): Promise<BeginMetaConnectionResult> => {
   try {
     const accessToken = await getAccessToken();
@@ -195,7 +208,7 @@ export const beginMetaConnection = async (workspaceId: string): Promise<BeginMet
       body: JSON.stringify({ workspaceId }),
     });
 
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
       return { ok: false, error: payload.error || 'Failed to start Meta connection.' };
     }
@@ -225,7 +238,7 @@ export const selectPrimaryMetaAdAccount = async (
       body: JSON.stringify({ workspaceId, adAccountId }),
     });
 
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
       return { ok: false, error: payload.error || 'Failed to select the primary Meta ad account.' };
     }
@@ -256,7 +269,7 @@ export const syncPrimaryMetaAccount = async (workspaceId: string): Promise<SyncM
       body: JSON.stringify({ workspaceId }),
     });
 
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
       return { ok: false, error: payload.error || 'Failed to sync the selected Meta ad account.' };
     }
@@ -363,7 +376,7 @@ export const syncWorkspaceGoogleAds = async (workspaceId: string): Promise<SyncG
       body: JSON.stringify({ workspaceId }),
     });
 
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) {
       return { ok: false, error: payload.error || 'Failed to sync Google Ads.' };
     }

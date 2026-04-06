@@ -8,12 +8,7 @@ export const getEffectiveWorkspacePlanTier = (
   if (!workspace) {
     return 'free';
   }
-
-  if (workspace.plan_tier === 'pro' || membership?.role === 'owner') {
-    return 'pro';
-  }
-
-  return 'free';
+  return workspace.plan_tier === 'pro' ? 'pro' : 'free';
 };
 
 export const updateWorkspacePlanTier = async (workspaceId: string, planTier: PlanTier) => {

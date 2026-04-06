@@ -1,5 +1,5 @@
-import { fetchMetaCampaignInsights } from './_lib/meta-graph.js';
-import { buildCreativeSnapshotsFromCampaigns } from './_lib/creative-engine.js';
+import { fetchMetaAdCreatives, fetchMetaCampaignInsights } from './_lib/meta-graph.js';
+import { buildCreativeSnapshotsFromAds } from './_lib/creative-engine.js';
 import { generateInsightsFromCampaigns } from './_lib/insight-engine.js';
 import { isSupabaseServerConfigured, supabaseAdmin, supabaseAuthClient } from './_lib/supabase-admin.js';
 import { decryptAccessToken, isTokenEncryptionConfigured } from './_lib/token-crypto.js';
@@ -44,6 +44,8 @@ const toUiCreative = (creative) => ({
   creative_name: creative.creative_name,
   campaign_name: creative.campaign_name || undefined,
   campaign_external_id: creative.campaign_external_id || undefined,
+  adset_name: creative.adset_name || undefined,
+  ad_name: creative.ad_name || undefined,
   media_type: creative.media_type,
   hook_type: creative.hook_type || undefined,
   score: Number(creative.score || 0),
@@ -185,8 +187,9 @@ export default async function handler(req, res) {
     });
 
     const campaigns = await fetchMetaCampaignInsights(accessToken, connection.connected_account_id);
+    const adCreatives = await fetchMetaAdCreatives(accessToken, connection.connected_account_id);
     const insights = generateInsightsFromCampaigns(campaigns);
-    const creativeRows = buildCreativeSnapshotsFromCampaigns(workspaceId, campaigns, 'meta', snapshotDate);
+    const creativeRows = buildCreativeSnapshotsFromAds(workspaceId, adCreatives, 'meta', snapshotDate);
 
     await supabaseAdmin
       .from('campaign_snapshots')

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -28,7 +28,18 @@ const SETTINGS_SECTION_STORAGE_KEY = 'ads-intel-settings-section';
 const SETTINGS_SECTION_EVENT = 'ads-intel:open-settings-section';
 
 const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) => {
-  const { currentPage, setCurrentPage, currency, setCurrency, pipelineAlerts } = useDatabase();
+  const {
+    currentPage,
+    setCurrentPage,
+    currency,
+    setCurrency,
+    pipelineAlerts,
+    adsData,
+    insights,
+    workspaceSettings,
+    workspaceSummary,
+    formatCurrency,
+  } = useDatabase();
   const { user, isDemoMode, signOut } = useAuth();
   const { currentWorkspace, metaConnection } = useWorkspace();
   const { theme, setTheme } = useTheme();
@@ -59,7 +70,7 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
 
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(3);
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
 
   const notifRef = useRef<HTMLDivElement>(null);
   const userRef = useRef<HTMLDivElement>(null);
@@ -73,33 +84,6 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
-
-  const notifications = [
-    ...pipelineAlerts.map((alert) => ({
-      id: alert.id,
-      icon: alert.severity === 'warning' ? AlertTriangle : alert.severity === 'success' ? TrendingUp : Users,
-      color: alert.severity === 'warning' ? 'text-amber-500' : alert.severity === 'success' ? 'text-emerald-500' : 'text-blue-500',
-      bg: alert.severity === 'warning' ? 'bg-amber-500/10' : alert.severity === 'success' ? 'bg-emerald-500/10' : 'bg-blue-500/10',
-      message: alert.message,
-      time: formatRelativeTime(metaConnection?.last_synced_at),
-    })),
-    {
-      id: 'notif_budget',
-      icon: DollarSign,
-      color: 'text-red-500',
-      bg: 'bg-red-500/10',
-      message: 'Budget threshold reached on Meta_Winter_Sale_Broad',
-      time: '15m ago',
-    },
-    {
-      id: 'notif_perf',
-      icon: TrendingUp,
-      color: 'text-emerald-500',
-      bg: 'bg-emerald-500/10',
-      message: 'Google_PMax_Shopping_All ROAS jumped to 4.2x',
-      time: '1h ago',
-    },
-  ];
 
   const shellTone = theme === 'dark'
     ? 'border-slate-700/80 bg-slate-900/75'
@@ -120,6 +104,116 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
     setCurrentPage('Settings');
     setShowUserMenu(false);
   };
+
+  const notifications = useMemo(() => {
+    const items: Array<{
+      id: string;
+      icon: typeof AlertTriangle;
+      color: string;
+      bg: string;
+      message: string;
+      time: string;
+    }> = [];
+
+    if (workspaceSettings?.warning_alerts_enabled !== false) {
+      pipelineAlerts.forEach((alert) => {
+        items.push({
+          id: alert.id,
+          icon: alert.severity === 'warning' ? AlertTriangle : alert.severity === 'success' ? TrendingUp : Users,
+          color: alert.severity === 'warning' ? 'text-amber-500' : alert.severity === 'success' ? 'text-emerald-500' : 'text-blue-500',
+          bg: alert.severity === 'warning' ? 'bg-amber-500/10' : alert.severity === 'success' ? 'bg-emerald-500/10' : 'bg-blue-500/10',
+          message: alert.message,
+          time: formatRelativeTime(metaConnection?.last_synced_at),
+        });
+      });
+    }
+
+    if (workspaceSettings?.low_ctr_alert_enabled !== false) {
+      adsData
+        .filter((campaign) => campaign.CTR < 1)
+        .slice(0, 3)
+        .forEach((campaign) => {
+          items.push({
+            id: `low-ctr-${campaign.id}`,
+            icon: AlertTriangle,
+            color: 'text-amber-500',
+            bg: 'bg-amber-500/10',
+            message: `${campaign.campaign_name} is below 1% CTR at ${campaign.CTR.toFixed(2)}%.`,
+            time: campaign.date ? formatRelativeTime(campaign.date) : formatRelativeTime(metaConnection?.last_synced_at),
+          });
+        });
+    }
+
+    if (workspaceSettings?.high_cpm_alert_enabled) {
+      adsData
+        .filter((campaign) => campaign.CPM > 25)
+        .slice(0, 3)
+        .forEach((campaign) => {
+          items.push({
+            id: `high-cpm-${campaign.id}`,
+            icon: DollarSign,
+            color: 'text-rose-500',
+            bg: 'bg-rose-500/10',
+            message: `${campaign.campaign_name} CPM is high at ${formatCurrency(campaign.CPM)}.`,
+            time: campaign.date ? formatRelativeTime(campaign.date) : formatRelativeTime(metaConnection?.last_synced_at),
+          });
+        });
+    }
+
+    if (workspaceSettings?.roas_drop_alert_enabled !== false) {
+      adsData
+        .filter((campaign) => campaign.ROAS > 0 && campaign.ROAS < 1.5)
+        .slice(0, 3)
+        .forEach((campaign) => {
+          items.push({
+            id: `roas-drop-${campaign.id}`,
+            icon: TrendingUp,
+            color: 'text-red-500',
+            bg: 'bg-red-500/10',
+            message: `${campaign.campaign_name} ROAS is weak at ${campaign.ROAS.toFixed(2)}x.`,
+            time: campaign.date ? formatRelativeTime(campaign.date) : formatRelativeTime(metaConnection?.last_synced_at),
+          });
+        });
+    }
+
+    if (workspaceSettings?.daily_summary_alert_enabled !== false && workspaceSummary) {
+      items.push({
+        id: `daily-summary-${workspaceSummary.summary_date}`,
+        icon: BellRing,
+        color: 'text-blue-500',
+        bg: 'bg-blue-500/10',
+        message: `Daily summary: ${workspaceSummary.campaign_count} campaigns, ${formatCurrency(workspaceSummary.total_spend)} spend, ROAS ${workspaceSummary.roas.toFixed(2)}x.`,
+        time: formatRelativeTime(workspaceSummary.summary_date),
+      });
+    }
+
+    insights
+      .filter((insight) => insight.priority === 'high')
+      .slice(0, 2)
+      .forEach((insight) => {
+        items.push({
+          id: `insight-${insight.id}`,
+          icon: insight.severity === 'attention' ? AlertTriangle : TrendingUp,
+          color: insight.severity === 'attention' ? 'text-rose-500' : 'text-emerald-500',
+          bg: insight.severity === 'attention' ? 'bg-rose-500/10' : 'bg-emerald-500/10',
+          message: insight.message,
+          time: formatRelativeTime(metaConnection?.last_synced_at),
+        });
+      });
+
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    }).slice(0, 12);
+  }, [adsData, formatCurrency, insights, metaConnection?.last_synced_at, pipelineAlerts, workspaceSettings, workspaceSummary]);
+
+  useEffect(() => {
+    setReadNotificationIds((previous) => previous.filter((id) => notifications.some((item) => item.id === id)));
+  }, [notifications]);
+
+  const unreadCount = notifications.filter((notification) => !readNotificationIds.includes(notification.id)).length;
 
   return (
     <header className="fixed top-0 z-50 w-full glass-nav">
@@ -162,9 +256,12 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
           <div className="relative" ref={notifRef}>
             <button
               onClick={() => {
-                setShowNotifications(!showNotifications);
+                const nextOpen = !showNotifications;
+                setShowNotifications(nextOpen);
                 setShowUserMenu(false);
-                if (showNotifications === false) setUnreadCount(0);
+                if (nextOpen) {
+                  setReadNotificationIds((previous) => Array.from(new Set([...previous, ...notifications.map((notification) => notification.id)])));
+                }
               }}
               className={`relative rounded-xl p-2 transition-colors active:scale-90 ${theme === 'dark' ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}
             >
@@ -189,11 +286,16 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
                 </div>
 
                 <div className="max-h-[320px] overflow-y-auto">
-                  {notifications.map((notification, index) => (
+                  {notifications.length === 0 ? (
+                    <div className="px-5 py-6">
+                      <p className={`text-xs font-semibold leading-relaxed ${bodyTextTone}`}>No active notifications right now.</p>
+                      <p className={`mt-1 text-[10px] font-medium ${mutedTextTone}`}>When campaign, creative, or sales alerts appear, they will show here.</p>
+                    </div>
+                  ) : notifications.map((notification) => (
                     <div
                       key={notification.id}
                       className={`flex items-start gap-3 px-5 py-3.5 transition-colors ${rowHoverTone} ${
-                        index < unreadCount ? 'bg-primary/[0.02]' : ''
+                        !readNotificationIds.includes(notification.id) ? 'bg-primary/[0.02]' : ''
                       }`}
                     >
                       <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${notification.bg}`}>
@@ -208,8 +310,14 @@ const Navigation = ({ onResetOnboarding }: { onResetOnboarding?: () => void }) =
                 </div>
 
                 <div className={`border-t px-5 py-3 ${theme === 'dark' ? 'border-slate-800' : 'border-slate-100'}`}>
-                  <button className="w-full text-center text-xs font-bold text-primary transition-colors hover:text-primary/80">
-                    View All Notifications
+                  <button
+                    onClick={() => {
+                      openSettingsSection('notifications');
+                      setShowNotifications(false);
+                    }}
+                    className="w-full text-center text-xs font-bold text-primary transition-colors hover:text-primary/80"
+                  >
+                    Open Notification Settings
                   </button>
                 </div>
               </div>

@@ -52,45 +52,7 @@ export default function App() {
     setIsUpgradeModalOpen(true);
   };
 
-  useEffect(() => {
-    if (!currentWorkspace || !currentMembership || currentMembership.role !== 'owner') {
-      return;
-    }
-
-    if (currentWorkspace.plan_tier === 'pro' || isDemoMode || isUpgradingWorkspacePlan) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const upgradeOwnerWorkspace = async () => {
-      setIsUpgradingWorkspacePlan(true);
-      try {
-        const result = await updateWorkspacePlanTier(currentWorkspace.id, 'pro');
-        if (!cancelled && !result.error) {
-          await refreshWorkspaceData();
-        }
-      } finally {
-        if (!cancelled) {
-          setIsUpgradingWorkspacePlan(false);
-        }
-      }
-    };
-
-    void upgradeOwnerWorkspace();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    currentMembership,
-    currentWorkspace,
-    isDemoMode,
-    isUpgradingWorkspacePlan,
-    refreshWorkspaceData,
-  ]);
-
-  const handleUpgrade = async () => {
+  const handleSelectPlan = async (nextPlan: PlanTier) => {
     if (!currentWorkspace || isDemoMode) {
       setIsUpgradeModalOpen(false);
       return;
@@ -98,7 +60,7 @@ export default function App() {
 
     setIsUpgradingWorkspacePlan(true);
     try {
-      const result = await updateWorkspacePlanTier(currentWorkspace.id, 'pro');
+      const result = await updateWorkspacePlanTier(currentWorkspace.id, nextPlan);
       if (!result.error) {
         await refreshWorkspaceData();
       }
@@ -207,7 +169,7 @@ export default function App() {
       <UpgradeModal
         isOpen={isUpgradeModalOpen}
         onClose={() => setIsUpgradeModalOpen(false)}
-        onUpgrade={handleUpgrade}
+        onSelectPlan={handleSelectPlan}
         trigger={upgradeTrigger}
         planTier={planTier}
       />

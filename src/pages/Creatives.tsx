@@ -67,6 +67,49 @@ const getMetricStatusStyles = (status: WinningAdsMetricStatus) => {
   return 'text-slate-500 bg-slate-400';
 };
 
+const EXISTING_POST_PATTERN = /\s*\[Existing Post ([^\]]+)\]\s*$/i;
+const LONG_TOKEN_PATTERN = /(?:^|\s)([a-f0-9]{24,}|[A-Za-z0-9_-]{28,})(?=\s|$)/g;
+
+const cleanCreativeTitle = (value: string) =>
+  value
+    .replace(EXISTING_POST_PATTERN, '')
+    .replace(LONG_TOKEN_PATTERN, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+const extractExistingPostId = (value: string) => value.match(EXISTING_POST_PATTERN)?.[1] || null;
+
+const compactId = (value: string) => (value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value);
+
+const looksLikePlayableVideoUrl = (value?: string) =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && !/\.(jpg|jpeg|png|webp|gif|bmp|svg)(\?|$)/i.test(value);
+
+const isLikelyVideoCreative = (creative: { media_type?: 'image' | 'video'; imageUrl?: string; thumbnailUrl?: string; creative_name: string; ad_name?: string }) =>
+  creative.media_type === 'video'
+  || looksLikePlayableVideoUrl(creative.imageUrl)
+  || looksLikePlayableVideoUrl(creative.thumbnailUrl)
+  || /\b(video|reel|story|clip|ugc)\b/i.test(`${creative.creative_name} ${creative.ad_name || ''}`);
+
+const stripExistingPostSentence = (value: string) =>
+  value.replace(/\s*This ad is linked to an existing Meta post(?:\s*\([^)]+\))?\.?/i, '').trim();
+
+const hasLiveCreativeDelivery = (creative: {
+  spend?: number;
+  impressions?: number;
+  linkClicks?: number;
+  costPerResult?: number;
+  videoViews3s?: number;
+  CTR?: number;
+}) =>
+  (creative.spend || 0) > 0
+  || (creative.impressions || 0) > 0
+  || (creative.linkClicks || 0) > 0
+  || (creative.videoViews3s || 0) > 0
+  || creative.costPerResult !== undefined
+  || (creative.CTR || 0) > 0;
+
 type PlatformFilter = 'all' | 'meta' | 'google' | 'uploaded';
 type StatusFilter = 'all' | 'WINNING' | 'TESTING' | 'FATIGUE DETECTED' | 'KILL' | 'COLD TEST';
 
@@ -79,6 +122,7 @@ export default function CreativesPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [expandedCreativeId, setExpandedCreativeId] = useState<string | null>(null);
+  const [expandedDetailId, setExpandedDetailId] = useState<string | null>(null);
   const [loadingSuggestionId, setLoadingSuggestionId] = useState<string | null>(null);
   const [liveSuggestions, setLiveSuggestions] = useState<Record<string, { provider: 'openai' | 'google' | 'rules'; summary: string; suggestions: string[] }>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -115,12 +159,13 @@ export default function CreativesPage() {
     const topPerformer = sortedCreatives[0];
     const fatigueCount = creatives.filter((creative) => creative.fatigue !== 'low').length;
     const weakHookCount = creatives.filter((creative) => creative.hook_strength < 60).length;
+    const cleanedTopPerformerName = topPerformer ? cleanCreativeTitle(topPerformer.creative_name) : null;
 
     return [
       {
         id: 'top',
         title: 'Top Performer',
-        description: topPerformer ? `${topPerformer.creative_name} is currently leading the library.` : 'No winning creative has been detected yet.',
+        description: cleanedTopPerformerName ? `${cleanedTopPerformerName} is currently leading the library.` : 'No winning creative has been detected yet.',
         icon: Trophy,
         color: 'text-primary',
         bg: 'bg-primary/10',
@@ -453,9 +498,19 @@ export default function CreativesPage() {
             const isExpanded = expandedCreativeId === creative.id;
             const resolvedSuggestions = liveSuggestions[creative.id]?.suggestions || creative.suggestions || [];
             const resolvedSummary = liveSuggestions[creative.id]?.summary || creative.analysis_summary || 'Analysis pending';
+            const fatigueSummary = stripExistingPostSentence(resolvedSummary);
             const suggestionProvider = liveSuggestions[creative.id]?.provider;
-            const previewUrl = creative.imageUrl || creative.thumbnailUrl || CREATIVE_FALLBACK_IMAGE;
-            const isVideo = creative.media_type === 'video';
+            const existingPostId = extractExistingPostId(creative.creative_name);
+            const displayTitle = cleanCreativeTitle(creative.creative_name);
+            const primaryMediaUrl = creative.imageUrl || creative.thumbnailUrl || CREATIVE_FALLBACK_IMAGE;
+            const previewUrl = isLikelyVideoCreative(creative) && looksLikePlayableVideoUrl(creative.imageUrl)
+              ? creative.imageUrl
+              : primaryMediaUrl;
+            const isVideo = isLikelyVideoCreative(creative);
+            const canRenderVideo = isVideo && looksLikePlayableVideoUrl(previewUrl);
+            const hasLiveData = hasLiveCreativeDelivery(creative);
+            const scoreLabel = hasLiveData ? 'Live Performance Score' : 'Rule-Based Prelaunch Score';
+            const showDetails = expandedDetailId === creative.id;
             const linkedLeads = leads.filter((lead) => lead.creative_name === creative.creative_name);
             const winningEvaluation = evaluateWinningAd({ creative, linkedLeads, targetCpl, maxCpl });
             const activeChecklist = isVideo ? winningEvaluation.videoMetrics : winningEvaluation.posterMetrics;
@@ -463,10 +518,10 @@ export default function CreativesPage() {
             return (
               <article key={creative.id} className="panel-surface overflow-hidden rounded-[2rem]">
                 <div className={`relative aspect-[4/5] overflow-hidden ${theme === 'dark' ? 'bg-slate-900' : 'bg-surface-container-low'}`}>
-                  {isVideo && previewUrl !== CREATIVE_FALLBACK_IMAGE ? (
+                  {canRenderVideo ? (
                     <video src={previewUrl} className="h-full w-full object-cover" muted controls playsInline />
                   ) : (
-                    <img src={previewUrl} alt={creative.creative_name} className="h-full w-full object-cover" />
+                    <img src={previewUrl} alt={displayTitle} className="h-full w-full object-cover" />
                   )}
                   <div className="absolute left-4 top-4 flex flex-wrap gap-2">
                     <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${getStatusStyles(creative.status)}`}>{creative.status}</span>
@@ -478,20 +533,35 @@ export default function CreativesPage() {
                       theme === 'dark' ? 'bg-slate-900/85 text-slate-200' : 'bg-white/85 text-slate-700'
                     }`}>{isVideo ? 'Video' : 'Image'}</span>
                   </div>
+                  {isVideo && !canRenderVideo && (
+                    <div className="absolute bottom-4 left-4 rounded-full bg-black/75 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-white">
+                      Video poster only
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-6 p-7">
                   <div>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h3 className="text-xl font-bold text-on-surface">{creative.creative_name}</h3>
+                        <h3 className="line-clamp-3 break-words text-xl font-bold text-on-surface">{displayTitle}</h3>
                         <p className="mt-2 text-sm text-on-surface-variant">
-                          {creative.campaign_name ? `Linked to ${creative.campaign_name}${creative.adset_name ? ` / ${creative.adset_name}` : ''}` : 'Uploaded draft for pre-launch creative review.'}
+                          {creative.campaign_name
+                            ? `Linked to ${creative.campaign_name}${creative.adset_name ? ` / ${creative.adset_name}` : ''}${creative.ad_name ? ` / ${creative.ad_name}` : ''}`
+                            : 'Uploaded draft for pre-launch creative review.'}
                         </p>
+                        {existingPostId && (
+                          <p className="mt-2 inline-flex max-w-full rounded-full bg-surface-container-high px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">
+                            Existing Post {compactId(existingPostId)}
+                          </p>
+                        )}
                       </div>
-                      <div className="rounded-2xl bg-surface-container-high px-3 py-2 text-right">
-                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Score</p>
-                        <p className="text-lg font-black text-on-surface">{creative.score || 0}</p>
+                      <div className="min-w-[88px] rounded-[1.4rem] bg-surface-container-high px-3 py-3 text-center">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-on-surface-variant">Score</p>
+                        <p className="mt-1 text-2xl font-black leading-none text-on-surface">{creative.score || 0}</p>
+                        <p className="mt-2 text-[10px] font-bold text-on-surface-variant">
+                          {hasLiveData ? 'Live' : 'Prelaunch'}
+                        </p>
                       </div>
                     </div>
 
@@ -511,19 +581,18 @@ export default function CreativesPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-4">
-                    <AIProgressBar label="Hook Strength" value={creative.hook_strength} />
-                    <AIProgressBar label="Message Clarity" value={creative.message_clarity} />
-                    <AIProgressBar label="CTA Presence" value={creative.cta_presence} />
-                  </div>
-
                   <div className="rounded-[1.5rem] bg-surface-container-high px-4 py-4">
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">Creative Fatigue</p>
-                        <p className="mt-1 text-sm font-medium text-on-surface-variant">{resolvedSummary}</p>
+                        <p className="mt-1 text-sm font-medium text-on-surface-variant">{fatigueSummary}</p>
+                        {existingPostId && (
+                          <p className="mt-2 text-[9px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">
+                            Linked Meta post {compactId(existingPostId)}
+                          </p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex shrink-0 items-center gap-2 rounded-full bg-surface px-2.5 py-1.5">
                         <div className={`h-2.5 w-2.5 rounded-full ${fatigueStyles.split(' ')[0]}`} />
                         <span className={`text-xs font-bold capitalize ${fatigueStyles.split(' ')[1]}`}>{creative.fatigue} fatigue</span>
                       </div>
@@ -557,39 +626,57 @@ export default function CreativesPage() {
                         <p className="mt-1 text-sm font-black text-on-surface">{formatCurrency(winningEvaluation.maxCpl)}</p>
                       </div>
                     </div>
-
-                    <div className="mt-4 grid gap-3">
-                      {activeChecklist.slice(0, isVideo ? 3 : 4).map((metric) => {
-                        const metricStyles = getMetricStatusStyles(metric.status);
-                        return (
-                          <div key={`${creative.id}-${metric.label}`} className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">{metric.label}</p>
-                                <p className="mt-1 text-sm font-bold text-on-surface">
-                                  {metric.value !== undefined
-                                    ? metric.label.toLowerCase().includes('ctr') || metric.label.toLowerCase().includes('rate')
-                                      ? `${metric.value.toFixed(2)}%`
-                                      : metric.label.toLowerCase().includes('cost')
-                                        ? formatCurrency(metric.value)
-                                        : Number.isInteger(metric.value)
-                                          ? metric.value.toLocaleString()
-                                          : metric.value.toFixed(2)
-                                    : 'Pending sync'}
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <div className={`ml-auto h-2.5 w-2.5 rounded-full ${metricStyles.split(' ')[1]}`} />
-                                <p className={`mt-2 text-[11px] font-black uppercase tracking-[0.14em] ${metricStyles.split(' ')[0]}`}>{metric.status}</p>
-                              </div>
-                            </div>
-                            <p className="mt-2 text-xs font-medium text-on-surface-variant">Target: {metric.benchmark}</p>
-                            {metric.note && <p className="mt-1 text-xs text-on-surface-variant">{metric.note}</p>}
-                          </div>
-                        );
-                      })}
-                    </div>
                   </div>
+
+                  <button
+                    onClick={() => setExpandedDetailId((current) => current === creative.id ? null : creative.id)}
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-outline-variant/30 px-4 py-3 text-sm font-bold uppercase tracking-[0.14em] text-on-surface transition-all hover:border-primary-container/30 hover:bg-surface-container-high"
+                  >
+                    <ChevronRight size={16} className={`transition-transform ${showDetails ? 'rotate-90' : ''}`} />
+                    {showDetails ? 'Hide Details' : 'View Details'}
+                  </button>
+
+                  {showDetails && (
+                    <div className="flex flex-col gap-6 rounded-[1.6rem] border border-outline-variant/30 bg-surface px-4 py-5">
+                      <div className="flex flex-col gap-4">
+                        <AIProgressBar label="Hook Strength" value={creative.hook_strength} />
+                        <AIProgressBar label="Message Clarity" value={creative.message_clarity} />
+                        <AIProgressBar label="CTA Presence" value={creative.cta_presence} />
+                      </div>
+
+                      <div className="grid gap-3">
+                        {activeChecklist.slice(0, isVideo ? 3 : 4).map((metric) => {
+                          const metricStyles = getMetricStatusStyles(metric.status);
+                          return (
+                            <div key={`${creative.id}-${metric.label}`} className="rounded-[1.2rem] bg-surface-container-high px-4 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">{metric.label}</p>
+                                  <p className="mt-1 text-sm font-bold text-on-surface">
+                                    {metric.value !== undefined
+                                      ? metric.label.toLowerCase().includes('ctr') || metric.label.toLowerCase().includes('rate')
+                                        ? `${metric.value.toFixed(2)}%`
+                                        : metric.label.toLowerCase().includes('cost')
+                                          ? formatCurrency(metric.value)
+                                          : Number.isInteger(metric.value)
+                                            ? metric.value.toLocaleString()
+                                            : metric.value.toFixed(2)
+                                      : 'Pending sync'}
+                                  </p>
+                                </div>
+                                <div className="text-right">
+                                  <div className={`ml-auto h-2.5 w-2.5 rounded-full ${metricStyles.split(' ')[1]}`} />
+                                  <p className={`mt-2 text-[11px] font-black uppercase tracking-[0.14em] ${metricStyles.split(' ')[0]}`}>{metric.status}</p>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-xs font-medium text-on-surface-variant">Target: {metric.benchmark}</p>
+                              {metric.note && <p className="mt-1 text-xs text-on-surface-variant">{metric.note}</p>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   <button
                     onClick={() => {
