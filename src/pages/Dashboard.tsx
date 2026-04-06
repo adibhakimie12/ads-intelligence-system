@@ -507,20 +507,20 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {commandSections.map((section) => {
                 const config = ACTION_STYLES[section.key];
                 const Icon = config.icon;
 
                 return (
-                  <div key={section.key} className={`rounded-[1.5rem] border px-5 py-5 ${theme === 'dark' ? 'border-slate-700 bg-slate-900/80' : 'border-slate-200 bg-slate-50'}`}>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
+                  <div key={section.key} className={`rounded-[1.5rem] border px-4 py-5 sm:px-5 ${theme === 'dark' ? 'border-slate-700 bg-slate-900/80' : 'border-slate-200 bg-slate-50'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex items-center gap-2">
                         <div className={`flex h-9 w-9 items-center justify-center rounded-2xl border ${config.tone}`}>
                           <Icon size={18} />
                         </div>
-                        <div>
-                          <p className={`text-sm font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{section.title}</p>
+                        <div className="min-w-0">
+                          <p className={`text-sm font-bold leading-snug ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{section.title}</p>
                           <p className={`text-[11px] font-black uppercase tracking-[0.18em] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
                             {section.campaigns.length} campaign{section.campaigns.length === 1 ? '' : 's'}
                           </p>
@@ -530,17 +530,32 @@ export default function DashboardPage() {
 
                     <div className="mt-4 space-y-3">
                       {section.campaigns.length > 0 ? section.campaigns.map((campaign) => (
-                        <div key={campaign.id} className={`rounded-2xl border px-4 py-4 shadow-sm ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-white bg-white'}`}>
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className={`text-sm font-semibold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{campaign.campaign_name}</p>
-                              <p className={`mt-1 text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
-                                ROAS {campaign.ROAS.toFixed(2)}x • CTR {campaign.CTR.toFixed(2)}% • CPM {formatCurrency(campaign.CPM)}
+                        <div key={campaign.id} className={`overflow-hidden rounded-2xl border px-4 py-4 shadow-sm ${theme === 'dark' ? 'border-slate-700 bg-slate-800' : 'border-white bg-white'}`}>
+                          <div className="flex flex-col gap-3">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <p className={`min-w-0 flex-1 line-clamp-3 text-sm font-semibold leading-snug ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>
+                                {campaign.campaign_name}
                               </p>
+                              <span className={`inline-flex shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] ${config.tone}`}>
+                                {config.badge}
+                              </span>
                             </div>
-                            <span className={`rounded-full border px-2 py-1 text-[10px] font-black uppercase tracking-[0.16em] ${config.tone}`}>
-                              {config.badge}
-                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className={`grid grid-cols-1 gap-2 sm:grid-cols-3 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                                <div className={`rounded-xl px-3 py-2 ${theme === 'dark' ? 'bg-slate-900/70' : 'bg-slate-50'}`}>
+                                  <p className="text-[10px] font-black uppercase tracking-[0.16em]">ROAS</p>
+                                  <p className={`mt-1 text-sm font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{campaign.ROAS.toFixed(2)}x</p>
+                                </div>
+                                <div className={`rounded-xl px-3 py-2 ${theme === 'dark' ? 'bg-slate-900/70' : 'bg-slate-50'}`}>
+                                  <p className="text-[10px] font-black uppercase tracking-[0.16em]">CTR</p>
+                                  <p className={`mt-1 text-sm font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{campaign.CTR.toFixed(2)}%</p>
+                                </div>
+                                <div className={`rounded-xl px-3 py-2 ${theme === 'dark' ? 'bg-slate-900/70' : 'bg-slate-50'}`}>
+                                  <p className="text-[10px] font-black uppercase tracking-[0.16em]">CPM</p>
+                                  <p className={`mt-1 text-sm font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{formatCurrency(campaign.CPM)}</p>
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )) : (
@@ -690,3 +705,4 @@ export default function DashboardPage() {
     </main>
   );
 }
+
