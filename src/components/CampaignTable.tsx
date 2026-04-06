@@ -4,6 +4,7 @@ import CampaignRow from './CampaignRow';
 const getStatusStyles = (status: string) => {
   switch (status.toLowerCase()) {
     case 'scaling': return 'bg-blue-100 text-blue-700 border-blue-200';
+    case 'scheduled': return 'bg-sky-100 text-sky-700 border-sky-200';
     case 'testing': return 'bg-slate-100 text-slate-600 border-slate-200';
     case 'underperforming': return 'bg-orange-100 text-orange-700 border-orange-200';
     case 'paused': return 'bg-red-100 text-red-700 border-red-200';
@@ -12,6 +13,8 @@ const getStatusStyles = (status: string) => {
 };
 
 const getDynamicStatus = (campaign: AdsData) => {
+  if (campaign.delivery?.toLowerCase() === 'scheduled') return 'Scheduled';
+  if (campaign.status?.toLowerCase() === 'scheduled') return 'Scheduled';
   if (campaign.status?.toLowerCase() === 'paused') return 'Paused';
   if (campaign.ROAS > 3) return 'Scaling';
   if (campaign.ROAS >= 1.5) return 'Testing';
@@ -19,6 +22,7 @@ const getDynamicStatus = (campaign: AdsData) => {
 };
 
 const getRecommendation = (campaign: AdsData) => {
+  if (campaign.delivery?.toLowerCase() === 'scheduled' || campaign.status?.toLowerCase() === 'scheduled') return null;
   if (campaign.status?.toLowerCase() === 'paused') return null;
   if (campaign.ROAS < 1) return 'Pause Campaign';
   if (campaign.ROAS > 3) return 'Scale Budget';

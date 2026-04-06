@@ -4,7 +4,7 @@ import CampaignTable from '../components/CampaignTable';
 import TrendChart from '../components/TrendChart';
 import { AdsData } from '../types';
 import { evaluateWinningAd } from '../services/creativeAnalysis';
-import { Filter, FileDown, TrendingUp, TrendingDown, ArrowUpRight, Target, Zap, AlertCircle, PauseCircle, Calendar, Sparkles, CheckCircle2, RefreshCw, X } from 'lucide-react';
+import { Filter, FileDown, TrendingUp, TrendingDown, ArrowUpRight, Target, Zap, AlertCircle, PauseCircle, Calendar, Sparkles, CheckCircle2, RefreshCw, X, Clock3 } from 'lucide-react';
 
 type TrendProvider = 'all' | 'meta' | 'google';
 type TimeRange = '7D' | '30D' | '90D';
@@ -92,6 +92,8 @@ const fallbackTrendData = {
 };
 
 const deriveStatus = (campaign: AdsData) => {
+  if (campaign.delivery?.toLowerCase() === 'scheduled') return 'scheduled';
+  if (campaign.status?.toLowerCase() === 'scheduled') return 'scheduled';
   if (campaign.status?.toLowerCase() === 'paused') return 'paused';
   if (campaign.ROAS > 3) return 'scaling';
   if (campaign.ROAS >= 1.5) return 'testing';
@@ -99,6 +101,7 @@ const deriveStatus = (campaign: AdsData) => {
 };
 
 const deriveRecommendation = (campaign: AdsData) => {
+  if (deriveStatus(campaign) === 'scheduled') return null;
   if (campaign.status?.toLowerCase() === 'paused') return null;
   if (campaign.ROAS < 1) return 'Pause Campaign';
   if (campaign.ROAS > 3) return 'Scale Budget';
@@ -408,6 +411,7 @@ export default function CampaignsPage() {
 
   const counts = {
     scaling: adsData.filter((ad) => deriveStatus(ad) === 'scaling').length,
+    scheduled: adsData.filter((ad) => deriveStatus(ad) === 'scheduled').length,
     testing: adsData.filter((ad) => deriveStatus(ad) === 'testing').length,
     underperforming: adsData.filter((ad) => deriveStatus(ad) === 'underperforming').length,
     paused: adsData.filter((ad) => deriveStatus(ad) === 'paused').length,
@@ -600,7 +604,7 @@ export default function CampaignsPage() {
     setPageFeedback('Campaign sync completed.');
   };
 
-  const filters = ['All', 'Scaling', 'Testing', 'Underperforming', 'Paused'];
+  const filters = ['All', 'Scaling', 'Scheduled', 'Testing', 'Underperforming', 'Paused'];
 
   return (
     <main className="mx-auto max-w-[1360px] px-6 pb-20 lg:px-8">
@@ -723,8 +727,9 @@ export default function CampaignsPage() {
 
       <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
         <div className="space-y-12 lg:col-span-8">
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
             <SummaryCard title="Scaling" count={counts.scaling} desc="High ROI / Ready to increase" icon={ArrowUpRight} color="text-secondary" />
+            <SummaryCard title="Scheduled" count={counts.scheduled} desc="Approved / Waiting for publish time" icon={Clock3} color="text-sky-600" />
             <SummaryCard title="Testing" count={counts.testing} desc="Early phase / Performance pending" icon={Zap} color="text-slate-600" />
             <SummaryCard title="Underperforming" count={counts.underperforming} desc="Below target / Attention needed" icon={AlertCircle} color="text-orange-600" />
             <SummaryCard title="Paused" count={counts.paused} desc="Stopped / Historical data" icon={PauseCircle} color="text-red-600" />
