@@ -461,9 +461,62 @@ app.get('/api/lead-capture', async (req, res) => {
 });
 
 app.post('/api/lead-capture', async (req, res) => {
-  const workspaceId = typeof req.body?.workspaceId === 'string' ? req.body.workspaceId.trim() : '';
+  const workspaceId = typeof req.body?.workspaceId === 'string'
+    ? req.body.workspaceId.trim()
+    : typeof req.body?.workspace_id === 'string'
+    ? req.body.workspace_id.trim()
+    : '';
   const platform = req.body?.platform === 'google' ? 'google' : 'meta';
-  const campaign = typeof req.body?.campaign === 'string' ? req.body.campaign.trim() : '';
+  const campaign = typeof req.body?.campaign === 'string'
+    ? req.body.campaign.trim()
+    : typeof req.body?.campaign_name === 'string'
+    ? req.body.campaign_name.trim()
+    : '';
+  const contactName = typeof req.body?.contactName === 'string'
+    ? req.body.contactName.trim()
+    : typeof req.body?.full_name === 'string'
+    ? req.body.full_name.trim()
+    : typeof req.body?.name === 'string'
+    ? req.body.name.trim()
+    : '';
+  const contactPhone = typeof req.body?.contactPhone === 'string'
+    ? req.body.contactPhone.trim()
+    : typeof req.body?.phone_number === 'string'
+    ? req.body.phone_number.trim()
+    : typeof req.body?.phone === 'string'
+    ? req.body.phone.trim()
+    : '';
+  const contactEmail = typeof req.body?.contactEmail === 'string'
+    ? req.body.contactEmail.trim()
+    : typeof req.body?.email === 'string'
+    ? req.body.email.trim()
+    : '';
+  const creativeName = typeof req.body?.creativeName === 'string'
+    ? req.body.creativeName.trim()
+    : typeof req.body?.ad_name === 'string'
+    ? req.body.ad_name.trim()
+    : typeof req.body?.form_name === 'string'
+    ? req.body.form_name.trim()
+    : '';
+  const adsetName = typeof req.body?.adsetName === 'string'
+    ? req.body.adsetName.trim()
+    : typeof req.body?.adset_name === 'string'
+    ? req.body.adset_name.trim()
+    : '';
+  const sourceEvent = typeof req.body?.sourceEvent === 'string' && req.body.sourceEvent.trim()
+    ? req.body.sourceEvent.trim()
+    : typeof req.body?.trigger === 'string' && req.body.trigger.trim()
+    ? req.body.trigger.trim()
+    : typeof req.body?.form_id === 'string' && req.body.form_id.trim()
+    ? 'meta_lead_form'
+    : 'whatsapp_click';
+  const externalLeadId = typeof req.body?.externalLeadId === 'string'
+    ? req.body.externalLeadId.trim()
+    : typeof req.body?.lead_id === 'string'
+    ? req.body.lead_id.trim()
+    : typeof req.body?.id === 'string'
+    ? req.body.id.trim()
+    : '';
 
   if (!workspaceId || !campaign) {
     return res.status(400).json({ error: 'workspaceId and campaign are required.' });
@@ -471,16 +524,31 @@ app.post('/api/lead-capture', async (req, res) => {
 
   try {
     const events = await readLeadCaptureEvents();
+    const duplicateEvent = externalLeadId
+      ? events.find((event) => event.workspaceId === workspaceId && event.externalLeadId === externalLeadId)
+      : null;
+
+    if (duplicateEvent) {
+      return res.json({
+        ok: true,
+        duplicate: true,
+        event: duplicateEvent,
+      });
+    }
+
     const event = {
       id: `capture_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       workspaceId,
       platform,
       campaign,
-      contactName: typeof req.body?.contactName === 'string' ? req.body.contactName.trim() : '',
-      contactPhone: typeof req.body?.contactPhone === 'string' ? req.body.contactPhone.trim() : '',
-      creativeName: typeof req.body?.creativeName === 'string' ? req.body.creativeName.trim() : '',
+      externalLeadId: externalLeadId || '',
+      externalFormId: typeof req.body?.form_id === 'string' ? req.body.form_id.trim() : '',
+      contactName,
+      contactPhone,
+      contactEmail,
+      creativeName,
       creativeType: req.body?.creativeType === 'video' ? 'video' : 'image',
-      adsetName: typeof req.body?.adsetName === 'string' ? req.body.adsetName.trim() : '',
+      adsetName,
       value: Number(req.body?.value || 0),
       ctr: Number(req.body?.ctr || 0),
       cpl: Number(req.body?.cpl || 0),
@@ -493,9 +561,7 @@ app.post('/api/lead-capture', async (req, res) => {
       recommendedAction: typeof req.body?.recommendedAction === 'string' && req.body.recommendedAction.trim()
         ? req.body.recommendedAction.trim()
         : 'Open WhatsApp and reply while intent is fresh.',
-      sourceEvent: typeof req.body?.sourceEvent === 'string' && req.body.sourceEvent.trim()
-        ? req.body.sourceEvent.trim()
-        : 'whatsapp_click',
+      sourceEvent,
       capturedAt: new Date().toISOString(),
       consumedAt: null,
     };

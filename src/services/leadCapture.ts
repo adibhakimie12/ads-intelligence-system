@@ -9,8 +9,11 @@ export interface LeadCaptureEvent {
   workspaceId: string;
   platform: 'meta' | 'google';
   campaign: string;
+  externalLeadId?: string;
+  externalFormId?: string;
   contactName?: string;
   contactPhone?: string;
+  contactEmail?: string;
   creativeName?: string;
   creativeType?: 'video' | 'image';
   adsetName?: string;
@@ -81,8 +84,11 @@ export const createLeadCapture = async (payload: {
   workspaceId: string;
   platform: 'meta' | 'google';
   campaign: string;
+  externalLeadId?: string;
+  externalFormId?: string;
   contactName?: string;
   contactPhone?: string;
+  contactEmail?: string;
   creativeName?: string;
   creativeType?: 'video' | 'image';
   adsetName?: string;

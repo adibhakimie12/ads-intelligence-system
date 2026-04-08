@@ -165,7 +165,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
       let { data: adAccountRows, error: adAccountError } = await supabase
         .from('meta_ad_accounts')
-        .select('id, workspace_id, meta_connection_id, meta_ad_account_id, ad_account_name, account_status, account_currency, is_primary, created_at')
+        .select('id, workspace_id, meta_connection_id, meta_ad_account_id, ad_account_name, account_status, account_currency, available_funds, amount_spent, daily_spending_limit, manual_available_funds, is_primary, created_at')
         .in('workspace_id', workspaceIds);
 
       if (adAccountError && isMissingColumnError(adAccountError.message)) {
@@ -178,6 +178,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           ...row,
           account_status: null,
           account_currency: null,
+          available_funds: null,
+          amount_spent: null,
+          daily_spending_limit: null,
+          manual_available_funds: null,
         }));
         adAccountError = fallbackResult.error;
       }

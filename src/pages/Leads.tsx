@@ -47,6 +47,19 @@ export default function LeadsPage({
 }: LeadsPageProps) {
   const { currentWorkspace } = useWorkspace();
   const { leads, adsData, formatCurrency, pipelineAlerts, createLead } = useDatabase();
+  const automationSamplePayload = React.useMemo(() => `{
+  "workspaceId": "${currentWorkspace?.id || 'YOUR_WORKSPACE_ID'}",
+  "platform": "meta",
+  "campaign": "{{campaign_name}}",
+  "externalLeadId": "{{lead_id}}",
+  "externalFormId": "{{form_id}}",
+  "contactName": "{{full_name}}",
+  "contactPhone": "{{phone_number}}",
+  "contactEmail": "{{email}}",
+  "creativeName": "{{ad_name}}",
+  "adsetName": "{{adset_name}}",
+  "sourceEvent": "meta_lead_form"
+}`, [currentWorkspace?.id]);
   const importInFlightRef = React.useRef(false);
   const [selectedLeadId, setSelectedLeadId] = React.useState<string | null>(null);
   const [isCreateLeadOpen, setIsCreateLeadOpen] = React.useState(false);
@@ -123,6 +136,23 @@ export default function LeadsPage({
     });
     return sorted;
   }, [leads, qualityFilter, searchTerm, sortOption, sourceFilter]);
+
+  const metaCampaignResultCount = React.useMemo(
+    () => adsData
+      .filter((campaign) => campaign.platform === 'meta')
+      .reduce((total, campaign) => total + Math.max(0, Number(campaign.conversions || 0)), 0),
+    [adsData]
+  );
+
+  const metaPipelineLeadCount = React.useMemo(
+    () => leads.filter((lead) => lead.source === 'meta').length,
+    [leads]
+  );
+
+  const proxyMessagingLeadCount = React.useMemo(
+    () => leads.filter((lead) => lead.hook_tag === 'meta_messaging_conversation_started').length,
+    [leads]
+  );
 
   const pipelineStages: { id: LeadStatus; label: string; color: string }[] = [
     { id: 'new', label: 'New Leads', color: 'bg-blue-500' },
@@ -362,7 +392,7 @@ export default function LeadsPage({
             Lead Management
           </div>
           <h1 className="font-headline text-[3.6rem] font-extrabold leading-tight tracking-[-0.05em] text-on-surface">Sales Pipeline</h1>
-          <p className="mt-2 font-medium text-on-surface-variant">Auto-capture new inbound interest, then move each lead manually through your sales pipeline.</p>
+          <p className="mt-2 font-medium text-on-surface-variant">Manage imported lead records here, then move each lead manually through your sales pipeline.</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -420,6 +450,38 @@ export default function LeadsPage({
             <button onClick={resetFilters} className="w-full rounded-2xl border border-outline-variant/30 px-4 py-3 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high">
               Clear Filters
             </button>
+          </div>
+        </div>
+      )}
+
+      {metaCampaignResultCount > 0 && metaPipelineLeadCount === 0 && (
+        <div className="mb-8 rounded-[2rem] border border-amber-200 bg-amber-50 px-5 py-4 text-amber-900">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-black tracking-tight">
+                Meta sync found {metaCampaignResultCount} campaign-level result{metaCampaignResultCount === 1 ? '' : 's'}, but no lead records have been imported yet.
+              </p>
+              <p className="mt-1 text-sm font-medium text-amber-800">
+                Those Meta numbers come from campaign insights. This pipeline only shows contact-level lead records saved in the app, so `New Leads` stays empty until leads are posted to the intake API or synced from a dedicated Meta lead source.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {proxyMessagingLeadCount > 0 && (
+        <div className="mb-8 rounded-[2rem] border border-blue-200 bg-blue-50 px-5 py-4 text-blue-900">
+          <div className="flex items-start gap-3">
+            <Info size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-black tracking-tight">
+                {proxyMessagingLeadCount} WhatsApp conversation lead{proxyMessagingLeadCount === 1 ? '' : 's'} were auto-created from Meta messaging results.
+              </p>
+              <p className="mt-1 text-sm font-medium text-blue-800">
+                These are placeholder leads generated from `messaging conversation started` counts. They help your pipeline move, but you still need to match each one to the actual WhatsApp chat manually because normal WhatsApp Business does not expose contact details to the app.
+              </p>
+            </div>
           </div>
         </div>
       )}
@@ -482,11 +544,11 @@ export default function LeadsPage({
             </div>
             <div>
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-primary">Inbound Capture</p>
-              <h3 className="mt-1 text-xl font-black text-on-surface">WhatsApp Lead Intake</h3>
+              <h3 className="mt-1 text-xl font-black text-on-surface">Lead Intake Endpoint</h3>
             </div>
           </div>
           <p className="mt-4 text-sm font-medium text-on-surface-variant">
-            Use the capture endpoint for inbound WhatsApp-click events. Anything captured there is imported automatically into `New Leads`.
+            This endpoint imports contact-level events into `New Leads`. Meta campaign lead totals do not appear here until an actual lead record is posted to the intake API or synced from a dedicated Meta lead-form integration.
           </p>
           <div className="mt-5 rounded-[1.5rem] border border-outline-variant/20 bg-surface-container-low p-4">
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-on-surface-variant">Capture Endpoint</p>
@@ -494,8 +556,17 @@ export default function LeadsPage({
             <p className="mt-2 text-xs text-on-surface-variant">
               {captureEndpointUnavailable
                 ? 'The capture API is not reachable right now, so automatic polling is paused until the backend is available again.'
-                : 'Pass at least `workspaceId`, `campaign`, and `platform` in a POST request.'}
+                : 'Pass at least `workspaceId`, `campaign`, and `platform` in a POST request. Make/Zapier can also send `lead_id`, `form_id`, `full_name`, `phone_number`, and `email`.'}
             </p>
+            {currentWorkspace && (
+              <p className="mt-2 text-xs font-semibold text-on-surface-variant">
+                Workspace ID: <span className="font-bold text-on-surface">{currentWorkspace.id}</span>
+              </p>
+            )}
+          </div>
+          <div className="mt-4 rounded-[1.5rem] border border-outline-variant/20 bg-surface-container-low p-4">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-on-surface-variant">Make / Zapier Payload</p>
+            <pre className="mt-3 overflow-x-auto text-xs font-medium leading-6 text-on-surface">{automationSamplePayload}</pre>
           </div>
           <div className="mt-5 flex flex-wrap gap-3">
             <button onClick={copyCaptureEndpoint} className="inline-flex items-center gap-2 rounded-full border border-outline-variant/30 px-4 py-2 text-sm font-bold text-on-surface">
@@ -538,14 +609,14 @@ export default function LeadsPage({
         </div>
       )}
 
-      <div className="flex gap-6 overflow-x-auto pb-8 scrollbar-hide -mx-4 px-4 lg:mx-0 lg:px-0">
+      <div className="scrollbar-hide -mx-4 flex gap-5 overflow-x-auto px-4 pb-8 lg:mx-0 lg:px-0">
         {pipelineStages.map((stage) => {
           const stageLeads = getLeadsByStatus(stage.id);
           const stageValue = getColumnValue(stage.id);
 
           return (
-            <div key={stage.id} className="panel-surface w-[320px] flex-shrink-0 rounded-[2.5rem] p-6">
-              <div className="mb-6 px-2">
+            <div key={stage.id} className="panel-surface flex h-auto w-[290px] flex-shrink-0 flex-col rounded-[2.25rem] p-5 lg:h-[calc(100vh-220px)]">
+              <div className="mb-5 px-1">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className={`h-2.5 w-2.5 rounded-full ${stage.color}`} />
@@ -561,7 +632,7 @@ export default function LeadsPage({
                 </div>
               </div>
 
-              <div className="min-h-[500px] space-y-4">
+              <div className="min-h-[460px] space-y-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
                 {stageLeads.length > 0 ? stageLeads.map((lead) => (
                   <LeadCard key={lead.id} lead={lead} onSelect={(item) => setSelectedLeadId(item.id)} />
                 )) : (
@@ -572,13 +643,13 @@ export default function LeadsPage({
               </div>
 
               {hasReachedLeadLimit ? (
-                <button onClick={onUpgradeRequest} className="group mt-6 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-amber-300 bg-amber-50 py-4 text-amber-700 transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary">
+                <button onClick={onUpgradeRequest} className="group mt-6 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-amber-300 bg-amber-50 py-4 text-amber-700 transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary lg:mt-4">
                   <Lock size={14} />
                   <span className="text-[10px] font-black uppercase tracking-widest">Upgrade to Add More Leads</span>
                   <ChevronRight size={14} className="transition-transform group-hover:translate-x-1" />
                 </button>
               ) : (
-                <button onClick={() => openCreateLeadModal(stage.id)} className="group mt-6 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-outline-variant/20 py-4 text-on-surface-variant/50 transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary">
+                <button onClick={() => openCreateLeadModal(stage.id)} className="group mt-6 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-outline-variant/20 py-4 text-on-surface-variant/50 transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary lg:mt-4">
                   <span className="text-[10px] font-black uppercase tracking-widest">Add Lead</span>
                   <ChevronRight size={14} className="transition-transform group-hover:translate-x-1" />
                 </button>

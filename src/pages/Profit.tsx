@@ -3,6 +3,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import MetricCard from '../components/MetricCard';
 import { Calculator, DollarSign, Target, Percent, TrendingUp, AlertTriangle, CheckCircle2, Package, BriefcaseBusiness, ShoppingCart, RotateCcw, Save, BadgeDollarSign, Goal } from 'lucide-react';
+import { getMetaSyncRangeLabel, getStoredMetaSyncRange, isAggregateMetaSyncRange } from '../utils/metaSyncRange';
 
 type CalculatorMode = 'product' | 'service' | 'ecommerce';
 
@@ -225,6 +226,9 @@ export default function ProfitPage() {
   const { currentWorkspace } = useWorkspace();
   const { adsData, profitData, setProfitData, formatCurrency, needsFirstSync, workspaceSummary, workspaceSummaryHistory } = useDatabase();
   const currencySymbol = formatCurrency(0).replace(/[0-9,\s.]/g, '');
+  const activeMetaSyncRange = getStoredMetaSyncRange(currentWorkspace?.id);
+  const activeMetaSyncRangeLabel = getMetaSyncRangeLabel(activeMetaSyncRange);
+  const prefersSnapshotMetrics = isAggregateMetaSyncRange(activeMetaSyncRange) || !workspaceSummary;
   const [calculatorState, setCalculatorState] = useState<Record<CalculatorMode, CalculatorState>>(() => ({
     product: {
       ...DEFAULT_CALCULATOR_STATE.product,
@@ -406,10 +410,14 @@ export default function ProfitPage() {
     return roundTo((netProfitPerSale / currentValues.price) * 100, 1);
   }, [activeMode, currentValues.price, netProfitPerSale]);
 
-  const totalRevenue = workspaceSummary?.total_revenue ?? adsData.reduce((acc, curr) => acc + curr.revenue, 0);
-  const totalAdSpend = workspaceSummary?.total_spend ?? adsData.reduce((acc, curr) => acc + curr.spend, 0);
+  const snapshotRevenue = useMemo(() => adsData.reduce((acc, curr) => acc + curr.revenue, 0), [adsData]);
+  const snapshotSpend = useMemo(() => adsData.reduce((acc, curr) => acc + curr.spend, 0), [adsData]);
+  const totalRevenue = prefersSnapshotMetrics ? snapshotRevenue : (workspaceSummary?.total_revenue ?? snapshotRevenue);
+  const totalAdSpend = prefersSnapshotMetrics ? snapshotSpend : (workspaceSummary?.total_spend ?? snapshotSpend);
   const totalNetProfit = totalRevenue - totalAdSpend;
-  const overallMargin = workspaceSummary?.profit_margin ?? (totalRevenue > 0 ? (totalNetProfit / totalRevenue) * 100 : 0);
+  const overallMargin = prefersSnapshotMetrics
+    ? (totalRevenue > 0 ? (totalNetProfit / totalRevenue) * 100 : 0)
+    : workspaceSummary?.profit_margin ?? (totalRevenue > 0 ? (totalNetProfit / totalRevenue) * 100 : 0);
 
   const kpiTrends = useMemo(() => {
     const [currentSummary, previousSummary] = workspaceSummaryHistory;
@@ -622,6 +630,7 @@ export default function ProfitPage() {
         <p className="mb-3 text-[11px] font-black uppercase tracking-[0.24em] text-secondary">Profit Intelligence</p>
         <h1 className="font-headline text-[3.6rem] font-extrabold leading-tight tracking-[-0.05em] text-on-surface">Profit Analysis</h1>
         <p className="mt-3 text-sm font-medium text-on-surface-variant">Live business reporting plus calculator modes based on your Meta Ads metrics workbook.</p>
+        <p className="mt-3 text-xs font-bold uppercase tracking-[0.18em] text-on-surface-variant">Active Meta sync window: {activeMetaSyncRangeLabel}</p>
       </div>
 
       <div className="mb-16 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
@@ -630,6 +639,12 @@ export default function ProfitPage() {
         <MetricCard label="Net Profit" value={formatCurrency(totalNetProfit)} trend={kpiTrends.netProfit} trendLabel={formatTrendLabel(kpiTrends.netProfit)} isPrimary={true} />
         <MetricCard label="Profit Margin" value={`${overallMargin.toFixed(1)}%`} trend={kpiTrends.margin} trendLabel={formatTrendLabel(kpiTrends.margin)} />
       </div>
+
+      {prefersSnapshotMetrics && (
+        <div className="mb-12 rounded-[1.5rem] border border-outline-variant/25 bg-surface-container-low px-5 py-4 text-sm text-on-surface-variant">
+          Profit KPIs are following the latest synced Meta snapshot for <span className="font-bold text-on-surface">{activeMetaSyncRangeLabel}</span>, so the totals match your broader campaign window instead of only the latest daily summary.
+        </div>
+      )}
 
       {needsFirstSync && (
         <div className="mb-12 rounded-[2rem] border border-dashed border-outline-variant/30 bg-surface-container-low p-8">

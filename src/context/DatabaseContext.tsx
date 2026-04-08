@@ -1,11 +1,14 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { AdsData, CreativeData, InsightData, ProfitData, RoutePage, CurrencyCode, LeadData, WorkspaceDailySummary, CreateLeadInput, CreateCreativeInput, WorkspaceSettings } from '../types';
 import { useAuth } from './AuthContext';
 import { useWorkspace } from './WorkspaceContext';
 import { supabase } from '../services/supabase';
-import { syncPrimaryMetaAccount, syncWorkspaceGoogleAds } from '../services/metaIntegration';
+import { syncPrimaryMetaAccountWithRange, syncWorkspaceGoogleAds } from '../services/metaIntegration';
 import { analyzeCreative, deriveCreativeFromCampaign, inferCreativeMediaType, inferHookType } from '../services/creativeAnalysis';
 import { buildDefaultWorkspaceSettings, getWorkspaceSettings } from '../services/workspaceSettings';
+import { formatCurrencyValue } from '../utils/currencyFormatting';
+import { mergeSyncedCampaignsByPlatform, mergeSyncedCreativesByPlatform } from '../utils/syncState';
+import { getStoredMetaSyncRange } from '../utils/metaSyncRange';
 
 interface DatabaseContextType {
   currentPage: RoutePage;
@@ -13,6 +16,7 @@ interface DatabaseContextType {
   adsData: AdsData[];
   setAdsData: React.Dispatch<React.SetStateAction<AdsData[]>>;
   creatives: CreativeData[];
+  creativeHistory: CreativeData[];
   setCreatives: React.Dispatch<React.SetStateAction<CreativeData[]>>;
   insights: InsightData[];
   setInsights: React.Dispatch<React.SetStateAction<InsightData[]>>;
@@ -229,6 +233,16 @@ const mergeCreativeCollections = (baseCreatives: CreativeData[], customCreatives
     const rightScore = (right.score || 0) + (right.CTR || 0) + (right.ROAS || 0);
     return rightScore - leftScore;
   });
+};
+
+const mergeLeadCollections = (baseLeads: LeadData[], incomingLeads: LeadData[]) => {
+  const nextMap = new Map<string, LeadData>();
+
+  [...baseLeads, ...incomingLeads].forEach((lead) => {
+    nextMap.set(lead.id, lead);
+  });
+
+  return [...nextMap.values()].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
 };
 
 const mapLeadRowsToLeadData = (rows: any[]): LeadData[] => rows.map((row) => ({
@@ -481,10 +495,11 @@ const mergeSummaryRowsIntoHistory = (
 
 export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isConfigured, isDemoMode } = useAuth();
-  const { currentWorkspace, refreshWorkspaceData } = useWorkspace();
+  const { currentWorkspace, refreshWorkspaceData, metaConnection } = useWorkspace();
   const [currentPage, setCurrentPage] = useState<RoutePage>('Dashboard');
   const [adsData, setAdsData] = useState<AdsData[]>(initialAdsData);
   const [creatives, setCreatives] = useState<CreativeData[]>(initialCreatives);
+  const [creativeHistory, setCreativeHistory] = useState<CreativeData[]>(initialCreatives);
   const [insights, setInsights] = useState<InsightData[]>([]);
   const [profitData, setProfitData] = useState<ProfitData>(initialProfitData);
   const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceDailySummary | null>(null);
@@ -503,21 +518,10 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const leadGenerationEnabled = workspaceSettings?.lead_generation_enabled ?? true;
 
   const formatCurrency = (value: number) => {
-    const formatted = new Intl.NumberFormat('en-US', {
-      style: 'decimal',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value);
-
-    switch (currency) {
-      case 'USD': return `$${formatted}`;
-      case 'GBP': return `GBP ${formatted}`;
-      case 'MYR': return `RM ${formatted}`;
-      default: return `RM ${formatted}`;
-    }
+    return formatCurrencyValue(value, currency);
   };
 
-  const syncAdsData = async (source: 'meta' | 'google' | 'all') => {
+  const syncAdsData = useCallback(async (source: 'meta' | 'google' | 'all') => {
     setIsFetching(true);
     try {
       let newData: AdsData[] = [];
@@ -526,11 +530,15 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const nextSummaryRows: WorkspaceDailySummary[] = [];
       if (source === 'meta' || source === 'all') {
         if (!isDemoMode && isConfigured && currentWorkspace) {
-          const metaResult = await syncPrimaryMetaAccount(currentWorkspace.id);
+          const metaSyncRange = getStoredMetaSyncRange(currentWorkspace.id);
+          const metaResult = await syncPrimaryMetaAccountWithRange(currentWorkspace.id, metaSyncRange);
           if (metaResult.ok) {
             newData = [...newData, ...metaResult.campaigns.map(enrichAdsRecord)];
             newCreatives = [...newCreatives, ...metaResult.creatives];
             setInsights(metaResult.insights);
+            if (metaResult.leads.length > 0) {
+              setLeads((previous) => mergeLeadCollections(previous, metaResult.leads));
+            }
             if (metaResult.summary) {
               nextSummaryRows.push(metaResult.summary as WorkspaceDailySummary);
             }
@@ -570,21 +578,30 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       // Update ads data, but prevent wiping if API fails completely
       if (newData.length > 0) {
-        setAdsData(mergeCampaignCollections(newData, customCampaigns));
+        setAdsData((previous) => mergeSyncedCampaignsByPlatform(previous, newData, customCampaigns, source));
         if (isDemoMode) {
           setCreatives(deriveCreativeCollection(newData, leads, customCreatives));
         }
       }
 
       if (newCreatives.length > 0) {
-        setCreatives(mergeCreativeCollections(newCreatives, customCreatives));
+        setCreatives((previous) => mergeSyncedCreativesByPlatform(previous, newCreatives, customCreatives, source));
       }
     } catch (error) {
       console.error('Failed to sync ads data:', error);
     } finally {
       setIsFetching(false);
     }
-  };
+  }, [
+    currentWorkspace,
+    customCampaigns,
+    customCreatives,
+    isConfigured,
+    isDemoMode,
+    leads,
+    refreshWorkspaceData,
+    workspaceSummaryHistory,
+  ]);
 
   useEffect(() => {
     setCustomCampaigns(readStoredCustomCampaigns(currentWorkspace?.id));
@@ -670,6 +687,22 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     void loadWorkspaceCampaignSnapshots();
   }, [currentWorkspace?.id, isConfigured, isDemoMode, customCampaigns]);
+
+  useEffect(() => {
+    if (isDemoMode || !isConfigured || !currentWorkspace || metaConnection?.status !== 'connected') {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || isFetching) {
+        return;
+      }
+
+      void syncAdsData('meta');
+    }, 30000);
+
+    return () => window.clearInterval(intervalId);
+  }, [currentWorkspace, isConfigured, isDemoMode, isFetching, metaConnection?.status, syncAdsData]);
 
   useEffect(() => {
     const loadWorkspaceSummary = async () => {
@@ -857,14 +890,18 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (!isMissingRelationError(error.message)) {
           console.error('Failed to load creative snapshots:', error.message);
         }
+        setCreativeHistory(deriveCreativeCollection(adsData, leads, []));
         setCreatives(deriveCreativeCollection(adsData, leads, []));
         return;
       }
 
       if (!creativeRows || creativeRows.length === 0) {
+        setCreativeHistory(deriveCreativeCollection(adsData, leads, []));
         setCreatives(deriveCreativeCollection(adsData, leads, []));
         return;
       }
+
+      setCreativeHistory(mapCreativeRowsToCreativeData(creativeRows));
 
       const latestSnapshotByPlatform = new Map<string, string>();
       creativeRows.forEach((row) => {
@@ -1236,6 +1273,7 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     const payload: Record<string, unknown> = {};
+    if (updates.name !== undefined) payload.name = updates.name;
     if (updates.status) payload.status = updates.status;
     if (updates.notes !== undefined) payload.notes = updates.notes;
     if (updates.score) payload.lead_score = updates.score;
@@ -1301,6 +1339,7 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       adsData, 
       setAdsData, 
       creatives, 
+      creativeHistory,
       setCreatives, 
       insights, 
       setInsights, 

@@ -1,5 +1,5 @@
 import { decodeState, exchangeCodeForToken, isMetaOAuthConfigured } from './_lib/meta-oauth.js';
-import { fetchMetaAdAccounts, fetchMetaProfile } from './_lib/meta-graph.js';
+import { fetchMetaAdAccountBilling, fetchMetaAdAccounts, fetchMetaProfile } from './_lib/meta-graph.js';
 import { isSupabaseServerConfigured, supabaseAdmin } from './_lib/supabase-admin.js';
 import { encryptAccessToken, isTokenEncryptionConfigured } from './_lib/token-crypto.js';
 
@@ -40,11 +40,38 @@ export default async function handler(req, res) {
     const parsedState = decodeState(state);
     const tokenResponse = await exchangeCodeForToken(code);
     const encryptedToken = encryptAccessToken(tokenResponse.access_token);
+    const [{ data: existingConnection }, { data: existingAccounts }] = await Promise.all([
+      supabaseAdmin
+        .from('meta_connections')
+        .select('id, connected_account_id, connected_account_name')
+        .eq('workspace_id', parsedState.workspaceId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('meta_ad_accounts')
+        .select('meta_ad_account_id, ad_account_name, is_primary')
+        .eq('workspace_id', parsedState.workspaceId),
+    ]);
     const [metaProfile, adAccounts] = await Promise.all([
       fetchMetaProfile(tokenResponse.access_token),
       fetchMetaAdAccounts(tokenResponse.access_token),
     ]);
-    const selectedPrimaryAccount = adAccounts.length === 1 ? adAccounts[0] : null;
+    const billingByAccountId = new Map();
+    await Promise.all(
+      adAccounts.map(async (account) => {
+        try {
+          const billing = await fetchMetaAdAccountBilling(tokenResponse.access_token, account.id);
+          billingByAccountId.set(account.id, billing);
+        } catch {
+          billingByAccountId.set(account.id, null);
+        }
+      })
+    );
+    const previousPrimaryAccountId = existingConnection?.connected_account_id
+      || existingAccounts?.find((account) => account.is_primary)?.meta_ad_account_id
+      || null;
+    const selectedPrimaryAccount = adAccounts.length === 1
+      ? adAccounts[0]
+      : adAccounts.find((account) => account.id === previousPrimaryAccountId) || null;
 
     const { data: connectionRow, error: connectionError } = await supabaseAdmin
       .from('meta_connections')
@@ -74,15 +101,21 @@ export default async function handler(req, res) {
     }
 
     if (adAccounts.length > 0) {
-      const accountRows = adAccounts.map((account) => ({
-        workspace_id: parsedState.workspaceId,
-        meta_connection_id: connectionRow.id,
-        meta_ad_account_id: account.id,
-        ad_account_name: account.name,
-        account_status: account.status,
-        account_currency: account.currency,
-        is_primary: selectedPrimaryAccount ? account.id === selectedPrimaryAccount.id : false,
-      }));
+      const accountRows = adAccounts.map((account) => {
+        const billing = billingByAccountId.get(account.id);
+        return {
+          workspace_id: parsedState.workspaceId,
+          meta_connection_id: connectionRow.id,
+          meta_ad_account_id: account.id,
+          ad_account_name: billing?.name || account.name,
+          account_status: billing?.status ?? account.status,
+          account_currency: billing?.currency ?? account.currency,
+          available_funds: billing?.availableFunds ?? null,
+          amount_spent: billing?.amountSpent ?? null,
+          daily_spending_limit: billing?.dailySpendingLimit ?? null,
+          is_primary: selectedPrimaryAccount ? account.id === selectedPrimaryAccount.id : false,
+        };
+      });
 
       const { error: accountError } = await supabaseAdmin
         .from('meta_ad_accounts')

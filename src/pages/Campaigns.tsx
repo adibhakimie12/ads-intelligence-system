@@ -10,6 +10,7 @@ type TrendProvider = 'all' | 'meta' | 'google';
 type TimeRange = '7D' | '30D' | '90D';
 type SortOption = 'spend_desc' | 'roas_desc' | 'ctr_desc' | 'name_asc';
 type RecommendationOption = 'all' | 'Scale Budget' | 'Improve Creative' | 'Adjust Audience' | 'Pause Campaign';
+type SummaryView = 'today' | 'yesterday' | 'custom' | 'maximum';
 
 const startOfWeek = (date: Date) => {
   const next = new Date(date);
@@ -129,6 +130,57 @@ const calculateChange = (current: number, previous: number) => {
     return current > 0 ? 100 : 0;
   }
   return ((current - previous) / previous) * 100;
+};
+
+const formatDateInputValue = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const aggregateSummaryRows = (
+  rows: Array<{ total_spend: number; total_revenue: number; total_conversions: number; average_ctr: number; average_cpm: number; roas: number; campaign_count: number }>
+) => {
+  if (rows.length === 0) {
+    return {
+      totalSpend: 0,
+      totalRevenue: 0,
+      totalResults: 0,
+      avgCtr: 0,
+      avgCpm: 0,
+      avgRoas: 0,
+      totalCampaignCount: 0,
+    };
+  }
+
+  const totals = rows.reduce((acc, row) => ({
+    totalSpend: acc.totalSpend + Number(row.total_spend || 0),
+    totalRevenue: acc.totalRevenue + Number(row.total_revenue || 0),
+    totalResults: acc.totalResults + Number(row.total_conversions || 0),
+    totalCtr: acc.totalCtr + Number(row.average_ctr || 0),
+    totalCpm: acc.totalCpm + Number(row.average_cpm || 0),
+    totalRoas: acc.totalRoas + Number(row.roas || 0),
+    totalCampaignCount: acc.totalCampaignCount + Number(row.campaign_count || 0),
+  }), {
+    totalSpend: 0,
+    totalRevenue: 0,
+    totalResults: 0,
+    totalCtr: 0,
+    totalCpm: 0,
+    totalRoas: 0,
+    totalCampaignCount: 0,
+  });
+
+  return {
+    totalSpend: totals.totalSpend,
+    totalRevenue: totals.totalRevenue,
+    totalResults: totals.totalResults,
+    avgCtr: totals.totalCtr / rows.length,
+    avgCpm: totals.totalCpm / rows.length,
+    avgRoas: totals.totalRoas / rows.length,
+    totalCampaignCount: totals.totalCampaignCount,
+  };
 };
 
 const KPITrend = ({ title, value, trend, isPositive }: { title: string; value: string; trend: string; isPositive: boolean }) => (
@@ -319,6 +371,9 @@ export default function CampaignsPage() {
   const [activeFilter, setActiveFilter] = useState('All');
   const [timeRange, setTimeRange] = useState<TimeRange>('7D');
   const [trendProvider, setTrendProvider] = useState<TrendProvider>('all');
+  const [summaryView, setSummaryView] = useState<SummaryView>('today');
+  const [customSummaryFromDate, setCustomSummaryFromDate] = useState(formatDateInputValue(new Date()));
+  const [customSummaryToDate, setCustomSummaryToDate] = useState(formatDateInputValue(new Date()));
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<'all' | 'meta' | 'google'>('all');
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationOption>('all');
@@ -334,6 +389,45 @@ export default function CampaignsPage() {
     }
     return aggregateTrendData(workspaceSummaryHistory, timeRange, trendProvider);
   }, [workspaceSummaryHistory, timeRange, trendProvider]);
+
+  const todayKey = formatDateInputValue(new Date());
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterdayKey = formatDateInputValue(yesterdayDate);
+
+  const summaryProvider = platformFilter === 'all' ? 'all' : platformFilter;
+  const summaryHistoryRows = useMemo(
+    () => workspaceSummaryHistory.filter((row) => summaryProvider === 'all' || row.provider === summaryProvider),
+    [workspaceSummaryHistory, summaryProvider]
+  );
+
+  const normalizedRangeStart = customSummaryFromDate <= customSummaryToDate ? customSummaryFromDate : customSummaryToDate;
+  const normalizedRangeEnd = customSummaryFromDate <= customSummaryToDate ? customSummaryToDate : customSummaryFromDate;
+
+  const selectedSummaryRows = useMemo(() => {
+    if (summaryView === 'maximum') {
+      return summaryHistoryRows;
+    }
+    if (summaryView === 'custom') {
+      return summaryHistoryRows.filter((row) => row.summary_date >= normalizedRangeStart && row.summary_date <= normalizedRangeEnd);
+    }
+    const selectedSummaryDate = summaryView === 'today' ? todayKey : yesterdayKey;
+    return summaryHistoryRows.filter((row) => row.summary_date === selectedSummaryDate);
+  }, [summaryHistoryRows, summaryView, normalizedRangeStart, normalizedRangeEnd, todayKey, yesterdayKey]);
+
+  const selectedSummaryMetrics = useMemo(
+    () => aggregateSummaryRows(selectedSummaryRows),
+    [selectedSummaryRows]
+  );
+
+  const hasSelectedSummaryData = selectedSummaryRows.length > 0;
+  const summaryViewLabel = summaryView === 'today'
+    ? 'Today'
+    : summaryView === 'yesterday'
+    ? 'Yesterday'
+    : summaryView === 'custom'
+    ? `${new Date(normalizedRangeStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} to ${new Date(normalizedRangeEnd).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : 'Maximum / Total';
 
   const totalSpend = adsData.reduce((acc, ad) => acc + ad.spend, 0);
   const totalRevenue = adsData.reduce((acc, ad) => acc + ad.revenue, 0);
@@ -474,41 +568,57 @@ export default function CampaignsPage() {
     ? new Date(workspaceSummary.updated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     : 'No sync yet';
 
-  const whatsappMetricCards = [
+  const periodMetricCards = [
     {
       label: 'Total Spend',
-      value: formatCurrency(totalSpend),
-      helper: 'Primary campaign control metric for live lead generation',
+      value: formatCurrency(hasSelectedSummaryData ? selectedSummaryMetrics.totalSpend : totalSpend),
+      helper: hasSelectedSummaryData
+        ? `${summaryViewLabel} spend from synced daily summaries`
+        : 'Showing latest synced campaign snapshot because no summary exists for this date',
     },
     {
       label: 'Total Results',
-      value: totalResults.toLocaleString(),
-      helper: 'Lead outcomes captured from synced campaign result totals',
-    },
-    {
-      label: 'Avg Cost / Result',
-      value: avgCostPerResult,
-      helper: 'Campaign-level cost efficiency for WhatsApp lead campaigns',
+      value: (hasSelectedSummaryData ? selectedSummaryMetrics.totalResults : totalResults).toLocaleString(),
+      helper: hasSelectedSummaryData
+        ? `${summaryViewLabel} result total from synced campaign summaries`
+        : 'Showing latest synced campaign result totals because no summary exists for this date',
     },
     {
       label: 'Avg CTR (All)',
-      value: `${avgCTR}%`,
-      helper: 'Broad engagement signal across all synced campaigns',
+      value: `${(hasSelectedSummaryData ? selectedSummaryMetrics.avgCtr : Number(avgCTR)).toFixed(2)}%`,
+      helper: hasSelectedSummaryData
+        ? `${summaryViewLabel} average CTR across synced summaries`
+        : 'Showing latest synced campaign CTR because no summary exists for this date',
+    },
+    {
+      label: 'ROAS',
+      value: `${(hasSelectedSummaryData ? selectedSummaryMetrics.avgRoas : Number(avgROAS)).toFixed(2)}x`,
+      helper: hasSelectedSummaryData
+        ? `${summaryViewLabel} return on ad spend from synced summaries`
+        : 'Showing latest synced campaign ROAS because no summary exists for this date',
+    },
+  ];
+
+  const snapshotMetricCards = [
+    {
+      label: 'Avg Cost / Result',
+      value: avgCostPerResult,
+      helper: 'Latest campaign snapshot cost efficiency for WhatsApp lead campaigns',
     },
     {
       label: 'Avg CTR (Link)',
       value: avgLinkCtr,
-      helper: 'More important click-quality signal for WhatsApp lead campaigns',
+      helper: 'Latest click-quality signal for WhatsApp lead campaigns',
     },
     {
       label: 'Total Link Clicks',
       value: adsData.reduce((sum, campaign) => sum + (campaign.linkClicks || 0), 0).toLocaleString(),
-      helper: 'Useful for judging how much traffic each campaign is driving',
+      helper: 'Latest synced traffic volume across visible campaigns',
     },
     {
       label: 'Avg CPC Link',
       value: avgLinkCpc,
-      helper: 'Average cost per link click before the lead step',
+      helper: 'Latest average cost per link click before the lead step',
     },
     {
       label: 'Avg Rate 75% VV',
@@ -678,8 +788,65 @@ export default function CampaignsPage() {
         </div>
       )}
 
+      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-secondary">Summary Window</p>
+          <h2 className="mt-2 text-xl font-black text-on-surface">Campaign Totals by Date</h2>
+          <p className="mt-2 text-sm text-on-surface-variant">
+            Switch between today, yesterday, a custom date, or maximum total to compare your Meta results more clearly.
+          </p>
+        </div>
+        <div className="flex flex-col gap-3 md:items-end">
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-surface-container-high p-1.5">
+            {([
+              { id: 'today', label: 'Today' },
+              { id: 'yesterday', label: 'Yesterday' },
+              { id: 'custom', label: 'Custom Range' },
+              { id: 'maximum', label: 'Maximum / Total' },
+            ] as Array<{ id: SummaryView; label: string }>).map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setSummaryView(option.id)}
+                className={`rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] transition-all ${
+                  summaryView === option.id ? 'bg-primary text-white shadow-sm' : 'text-on-surface-variant hover:text-on-surface'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {summaryView === 'custom' && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">From</span>
+                <input
+                  type="date"
+                  value={customSummaryFromDate}
+                  onChange={(event) => setCustomSummaryFromDate(event.target.value)}
+                  className="w-full rounded-2xl border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm font-semibold text-on-surface outline-none"
+                />
+              </label>
+              <label className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">To</span>
+                <input
+                  type="date"
+                  value={customSummaryToDate}
+                  onChange={(event) => setCustomSummaryToDate(event.target.value)}
+                  className="w-full rounded-2xl border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-sm font-semibold text-on-surface outline-none"
+                />
+              </label>
+            </div>
+          )}
+          <p className="text-xs font-medium text-on-surface-variant">
+            {hasSelectedSummaryData
+              ? `${summaryViewLabel} summary loaded${summaryProvider === 'all' ? '' : ` for ${summaryProvider}`}.`
+              : `No synced summary found for ${summaryViewLabel.toLowerCase()}, so the cards fall back to the latest snapshot.`}
+          </p>
+        </div>
+      </div>
+
       <div className="mb-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
-        {whatsappMetricCards.slice(0, 4).map((card) => (
+        {periodMetricCards.map((card) => (
           <div key={card.label}>
             <MetricCard label={card.label} value={card.value} helper={card.helper} />
           </div>
@@ -687,7 +854,7 @@ export default function CampaignsPage() {
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
-        {whatsappMetricCards.slice(4).map((card) => (
+        {snapshotMetricCards.map((card) => (
           <div key={card.label}>
             <MetricCard label={card.label} value={card.value} helper={card.helper} />
           </div>
@@ -695,7 +862,7 @@ export default function CampaignsPage() {
       </div>
 
       <div className="mb-12 rounded-[1.5rem] border border-outline-variant/10 bg-surface-container-low px-5 py-4 text-sm text-on-surface-variant">
-        Campaign summary cards focus on lead decisions. Full delivery, budget, reach, impressions, CPM, and 25% / 50% / 75% video view metrics stay in the campaign table and the details modal.
+        The first four cards follow your selected date window. The second row stays on the latest synced campaign snapshot for traffic and video diagnostics.
       </div>
 
       <div className="panel-surface mb-12 rounded-[2rem] p-8 lg:p-10">

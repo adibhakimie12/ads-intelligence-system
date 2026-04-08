@@ -15,6 +15,44 @@ const fetchMetaGraph = async (path, accessToken) => {
   return payload;
 };
 
+const fetchMetaGraphByUrl = async (urlString, accessToken) => {
+  const url = new URL(urlString);
+  if (!url.searchParams.get('access_token')) {
+    url.searchParams.set('access_token', accessToken);
+  }
+
+  const response = await fetch(url);
+  const payload = await response.json();
+
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error?.message || 'Meta Graph API request failed.');
+  }
+
+  return payload;
+};
+
+const fetchMetaGraphPaginated = async (path, accessToken, maxPages = 20) => {
+  const firstPage = await fetchMetaGraph(path, accessToken);
+  const initialRows = Array.isArray(firstPage.data) ? firstPage.data : [];
+
+  let rows = [...initialRows];
+  let nextUrl = firstPage.paging?.next || null;
+  let pageCount = 1;
+
+  while (nextUrl && pageCount < maxPages) {
+    const nextPage = await fetchMetaGraphByUrl(nextUrl, accessToken);
+    const pageRows = Array.isArray(nextPage.data) ? nextPage.data : [];
+    rows = rows.concat(pageRows);
+    nextUrl = nextPage.paging?.next || null;
+    pageCount += 1;
+  }
+
+  return {
+    ...firstPage,
+    data: rows,
+  };
+};
+
 const pickFirstUrl = (...values) =>
   values.find((value) => typeof value === 'string' && value.trim().length > 0) || null;
 
@@ -148,19 +186,102 @@ export const fetchMetaAdAccounts = async (accessToken) => {
     name: account.name,
     status: account.account_status ?? null,
     currency: account.currency ?? null,
+    availableFunds: null,
+    amountSpent: null,
+    dailySpendingLimit: null,
   }));
 };
 
-export const fetchMetaCampaignInsights = async (accessToken, adAccountId) => {
+export const fetchMetaAdAccountBilling = async (accessToken, adAccountId) => {
   const cleanAccountId = adAccountId.startsWith('act_') ? adAccountId : `act_${adAccountId}`;
-  const path = `${cleanAccountId}/campaigns?fields=id,name,status,daily_budget,lifetime_budget,insights.date_preset(last_7d){spend,ctr,cpm,impressions,reach,inline_link_click_ctr,inline_link_clicks,cpc,purchase_roas,actions,video_play_actions,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions}`;
-  const payload = await fetchMetaGraph(path, accessToken);
+  const payload = await fetchMetaGraph(`${cleanAccountId}?fields=id,name,account_status,currency,balance,amount_spent,spend_cap`, accessToken);
 
-  return (payload.data || []).map((campaign) => {
-    const item = campaign.insights?.data?.[0] || {};
-    const purchases = item.actions
-      ? item.actions.find((action) => action.action_type === 'purchase')?.value
-      : 0;
+  return {
+    id: payload.id,
+    name: payload.name,
+    status: payload.account_status ?? null,
+    currency: payload.currency ?? null,
+    availableFunds: payload.balance != null ? Number(payload.balance) / 100 : null,
+    amountSpent: payload.amount_spent != null ? Number(payload.amount_spent) / 100 : null,
+    dailySpendingLimit: payload.spend_cap != null ? Number(payload.spend_cap) / 100 : null,
+  };
+};
+
+const parseActionsValue = (actions = [], allowedTypes = []) => {
+  if (!Array.isArray(actions) || actions.length === 0) return 0;
+  const matched = actions.find((action) => allowedTypes.includes(action.action_type));
+  return Number.parseFloat(matched?.value || '0');
+};
+
+const META_RESULT_ACTION_TYPES = [
+  'onsite_conversion.messaging_conversation_started_7d',
+  'onsite_conversion.messaging_first_reply',
+  'onsite_conversion.total_messaging_connection',
+  'lead',
+  'omni_lead',
+  'purchase',
+];
+
+const normalizeFieldData = (fieldData = []) => {
+  if (!Array.isArray(fieldData)) {
+    return {};
+  }
+
+  return fieldData.reduce((accumulator, item) => {
+    const key = String(item?.name || '').trim().toLowerCase();
+    if (!key) {
+      return accumulator;
+    }
+
+    const values = Array.isArray(item?.values) ? item.values.filter(Boolean) : [];
+    if (values.length > 0) {
+      accumulator[key] = values.join(', ');
+    }
+
+    return accumulator;
+  }, {});
+};
+
+const resolveDailyPresetDate = (datePreset) => {
+  const now = new Date();
+  if (datePreset === 'yesterday') {
+    now.setDate(now.getDate() - 1);
+  }
+  return now.toISOString().slice(0, 10);
+};
+
+const buildInsightsTimeQuery = (datePreset) => {
+  if (datePreset === 'today' || datePreset === 'yesterday' || datePreset === 'last_7d' || datePreset === 'last_30d' || datePreset === 'maximum') {
+    return `date_preset=${datePreset}`;
+  }
+  return 'date_preset=today';
+};
+
+export const fetchMetaCampaignInsights = async (accessToken, adAccountId, datePreset = 'today') => {
+  const cleanAccountId = adAccountId.startsWith('act_') ? adAccountId : `act_${adAccountId}`;
+  const campaignPayload = await fetchMetaGraphPaginated(
+    `${cleanAccountId}/campaigns?fields=id,name,status,daily_budget,lifetime_budget`,
+    accessToken
+  );
+  const insightFields = 'campaign_id,campaign_name,spend,ctr,cpm,impressions,reach,inline_link_click_ctr,inline_link_clicks,cpc,purchase_roas,actions,video_play_actions,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions';
+  const timeQuery = buildInsightsTimeQuery(datePreset);
+  let insightsPayload = await fetchMetaGraphPaginated(
+    `${cleanAccountId}/insights?level=campaign&${timeQuery}&fields=${insightFields}`,
+    accessToken
+  );
+
+  if (datePreset === 'today' && (!Array.isArray(insightsPayload.data) || insightsPayload.data.length === 0)) {
+    insightsPayload = await fetchMetaGraphPaginated(
+      `${cleanAccountId}/insights?level=campaign&date_preset=last_7d&fields=${insightFields}`,
+      accessToken
+    );
+  }
+
+  const insightMap = new Map((insightsPayload.data || []).map((item) => [item.campaign_id, item]));
+
+  return (campaignPayload.data || []).map((campaign) => {
+    const item = insightMap.get(campaign.id) || {};
+    const results = parseActionsValue(item.actions, META_RESULT_ACTION_TYPES);
     const roas = item.purchase_roas?.[0]?.value || 0;
     const budget = Number.parseFloat(campaign.daily_budget || campaign.lifetime_budget || '0');
     const impressions = Number.parseFloat(item.impressions || '0');
@@ -177,7 +298,7 @@ export const fetchMetaCampaignInsights = async (accessToken, adAccountId) => {
       campaignId: campaign.id || item.campaign_id || campaign.name,
       campaignName: campaign.name || item.campaign_name || 'Unnamed Campaign',
       delivery,
-      resultsLabel: 'Results',
+      resultsLabel: results > 0 ? 'Messaging conversations' : 'Results',
       budget,
       spend: Number.parseFloat(item.spend || '0'),
       ctr: Number.parseFloat(item.ctr || '0'),
@@ -188,9 +309,9 @@ export const fetchMetaCampaignInsights = async (accessToken, adAccountId) => {
       reach,
       impressions,
       roas: Number.parseFloat(roas || '0'),
-      conversions: Number.parseInt(purchases || '0', 10),
-      costPerResult: Number.parseInt(purchases || '0', 10) > 0
-        ? Number.parseFloat(item.spend || '0') / Number.parseInt(purchases || '0', 10)
+      conversions: Number.parseInt(results || '0', 10),
+      costPerResult: Number.parseInt(results || '0', 10) > 0
+        ? Number.parseFloat(item.spend || '0') / Number.parseInt(results || '0', 10)
         : null,
       hookRate: impressions > 0 ? videoViews3s / impressions : null,
       videoViews3s,
@@ -200,12 +321,6 @@ export const fetchMetaCampaignInsights = async (accessToken, adAccountId) => {
       rate75VV,
     };
   });
-};
-
-const parseActionsValue = (actions = [], allowedTypes = []) => {
-  if (!Array.isArray(actions) || actions.length === 0) return 0;
-  const matched = actions.find((action) => allowedTypes.includes(action.action_type));
-  return Number.parseFloat(matched?.value || '0');
 };
 
 const inferCreativeMediaType = ({ creative = {}, adName = '', videoViews25 = 0, videoViews3s = 0 }) => {
@@ -221,10 +336,27 @@ const inferCreativeMediaType = ({ creative = {}, adName = '', videoViews25 = 0, 
   return 'image';
 };
 
-export const fetchMetaAdCreatives = async (accessToken, adAccountId) => {
+export const fetchMetaAdCreatives = async (accessToken, adAccountId, datePreset = 'today') => {
   const cleanAccountId = adAccountId.startsWith('act_') ? adAccountId : `act_${adAccountId}`;
-  const path = `${cleanAccountId}/ads?fields=id,name,status,adset{id,name},campaign{id,name},creative{id,name,effective_object_story_id,object_story_id,image_url,thumbnail_url,object_type,object_story_spec{link_data{picture},photo_data{image_url},video_data{image_url,video_id},template_data{picture}}},insights.date_preset(last_7d){spend,ctr,cpm,impressions,reach,inline_link_click_ctr,inline_link_clicks,cpc,actions,video_play_actions,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions}`;
-  const payload = await fetchMetaGraph(path, accessToken);
+  const payload = await fetchMetaGraphPaginated(
+    `${cleanAccountId}/ads?fields=id,name,status,adset{id,name},campaign{id,name},creative{id,name,effective_object_story_id,object_story_id,image_url,thumbnail_url,object_type,object_story_spec{link_data{picture},photo_data{image_url},video_data{image_url,video_id},template_data{picture}}}`,
+    accessToken
+  );
+  const insightFields = 'ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,spend,ctr,cpm,impressions,reach,inline_link_click_ctr,inline_link_clicks,cpc,actions,video_play_actions,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions';
+  const timeQuery = buildInsightsTimeQuery(datePreset);
+  let adInsightsPayload = await fetchMetaGraphPaginated(
+    `${cleanAccountId}/insights?level=ad&${timeQuery}&fields=${insightFields}`,
+    accessToken
+  );
+
+  if (datePreset === 'today' && (!Array.isArray(adInsightsPayload.data) || adInsightsPayload.data.length === 0)) {
+    adInsightsPayload = await fetchMetaGraphPaginated(
+      `${cleanAccountId}/insights?level=ad&date_preset=last_7d&fields=${insightFields}`,
+      accessToken
+    );
+  }
+
+  const insightMap = new Map((adInsightsPayload.data || []).map((item) => [item.ad_id, item]));
   const postMediaCache = new Map();
   const videoMediaCache = new Map();
 
@@ -246,7 +378,7 @@ export const fetchMetaAdCreatives = async (accessToken, adAccountId) => {
 
   return Promise.all((payload.data || []).map(async (ad) => {
     const creative = ad.creative || {};
-    const item = ad.insights?.data?.[0] || {};
+    const item = insightMap.get(ad.id) || {};
     const impressions = Number.parseFloat(item.impressions || '0');
     const spend = Number.parseFloat(item.spend || '0');
     const linkClicks = Number.parseFloat(item.inline_link_clicks || '0');
@@ -255,13 +387,7 @@ export const fetchMetaAdCreatives = async (accessToken, adAccountId) => {
     const videoViews50 = Number.parseFloat(item.video_p50_watched_actions?.[0]?.value || '0');
     const videoViews75 = Number.parseFloat(item.video_p75_watched_actions?.[0]?.value || '0');
     const rate75VV = videoViews25 > 0 ? videoViews75 / videoViews25 : null;
-    const resultCount = parseActionsValue(item.actions, [
-      'onsite_conversion.messaging_conversation_started_7d',
-      'onsite_conversion.messaging_first_reply',
-      'lead',
-      'omni_lead',
-      'purchase',
-    ]);
+    const resultCount = parseActionsValue(item.actions, META_RESULT_ACTION_TYPES);
     const existingPostId = creative.effective_object_story_id || creative.object_story_id || null;
     const mediaFromStorySpec = extractMediaFromStorySpec(creative.object_story_spec || {});
     const mediaFromPost = existingPostId ? await resolvePostMedia(existingPostId) : null;
@@ -315,5 +441,44 @@ export const fetchMetaAdCreatives = async (accessToken, adAccountId) => {
       videoViews75,
       rate75VV,
     };
+  }));
+};
+
+export { resolveDailyPresetDate };
+
+export const fetchMetaLeadGenForms = async (accessToken, adAccountId) => {
+  const cleanAccountId = adAccountId.startsWith('act_') ? adAccountId : `act_${adAccountId}`;
+  const payload = await fetchMetaGraphPaginated(
+    `${cleanAccountId}/leadgen_forms?fields=id,name,status,locale,created_time`,
+    accessToken
+  );
+
+  return (payload.data || []).map((form) => ({
+    id: form.id,
+    name: form.name || 'Meta Lead Form',
+    status: form.status || 'UNKNOWN',
+    locale: form.locale || null,
+    createdTime: form.created_time || null,
+  }));
+};
+
+export const fetchMetaLeadGenLeads = async (accessToken, formId) => {
+  const payload = await fetchMetaGraphPaginated(
+    `${formId}/leads?fields=id,created_time,ad_id,campaign_name,field_data`,
+    accessToken,
+    50
+  );
+
+  return (payload.data || []).map((lead) => ({
+    id: lead.id,
+    createdTime: lead.created_time || null,
+    adId: lead.ad_id || null,
+    adName: null,
+    adsetId: null,
+    adsetName: null,
+    campaignId: null,
+    campaignName: lead.campaign_name || null,
+    platform: 'meta',
+    fields: normalizeFieldData(lead.field_data),
   }));
 };

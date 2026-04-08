@@ -4,7 +4,7 @@ import { useWorkspace } from '../context/WorkspaceContext';
 import { useTheme } from '../context/ThemeContext';
 import { requestCreativeSuggestions } from '../services/creativeAi';
 import { evaluateWinningAd, type WinningAdsMetricStatus, type WinningAdsVerdict } from '../services/creativeAnalysis';
-import { Sparkles, Trophy, ZapOff, MousePointer2, Filter, Plus, FileDown, RefreshCcw, Upload, X, Image as ImageIcon, Video, ChevronRight } from 'lucide-react';
+import { Sparkles, Trophy, ZapOff, MousePointer2, Filter, Plus, FileDown, RefreshCcw, Upload, X, Image as ImageIcon, Video, ChevronRight, CalendarDays, Wallet, MousePointerClick, BarChart3 } from 'lucide-react';
 
 const CREATIVE_FALLBACK_IMAGE = `data:image/svg+xml;utf8,${encodeURIComponent(`
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500">
@@ -110,15 +110,104 @@ const hasLiveCreativeDelivery = (creative: {
   || creative.costPerResult !== undefined
   || (creative.CTR || 0) > 0;
 
+const isActiveCampaignDelivery = (delivery?: string) => {
+  const normalized = String(delivery || '').trim().toLowerCase();
+  return normalized === 'active' || normalized === 'in_process';
+};
+
 type PlatformFilter = 'all' | 'meta' | 'google' | 'uploaded';
 type StatusFilter = 'all' | 'WINNING' | 'TESTING' | 'FATIGUE DETECTED' | 'KILL' | 'COLD TEST';
+type SummaryView = 'today' | 'yesterday' | 'custom' | 'maximum';
+
+const formatDateInputValue = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const buildCreativeRangeKey = (creative: { platform?: 'meta' | 'google'; creative_external_id?: string; creative_name: string; campaign_external_id?: string; campaign_name?: string; origin?: 'synced' | 'uploaded' }) =>
+  [
+    creative.origin || 'synced',
+    creative.platform || 'meta',
+    creative.creative_external_id || '',
+    creative.campaign_external_id || '',
+    creative.campaign_name || '',
+    creative.creative_name,
+  ].join('::');
+
+const aggregateCreativeRange = (rows: any[]) => {
+  const latest = [...rows].sort((left, right) => {
+    const rightDate = new Date(right.snapshot_date || 0).getTime();
+    const leftDate = new Date(left.snapshot_date || 0).getTime();
+    return rightDate - leftDate;
+  })[0];
+
+  if (!latest) return null;
+
+  const totals = rows.reduce((acc, row) => ({
+    spend: acc.spend + Number(row.spend || 0),
+    impressions: acc.impressions + Number(row.impressions || 0),
+    linkClicks: acc.linkClicks + Number(row.linkClicks || 0),
+    videoViews3s: acc.videoViews3s + Number(row.videoViews3s || 0),
+    videoViews25: acc.videoViews25 + Number(row.videoViews25 || 0),
+    videoViews50: acc.videoViews50 + Number(row.videoViews50 || 0),
+    videoViews75: acc.videoViews75 + Number(row.videoViews75 || 0),
+    ctr: acc.ctr + Number(row.CTR || 0),
+    linkCtr: acc.linkCtr + Number(row.linkCTR || 0),
+    roas: acc.roas + Number(row.ROAS || 0),
+    costPerLinkClick: acc.costPerLinkClick + Number(row.costPerLinkClick || 0),
+    costPerResult: acc.costPerResult + Number(row.costPerResult || 0),
+    hookRate: acc.hookRate + Number(row.hookRate || 0),
+    score: acc.score + Number(row.score || 0),
+  }), {
+    spend: 0,
+    impressions: 0,
+    linkClicks: 0,
+    videoViews3s: 0,
+    videoViews25: 0,
+    videoViews50: 0,
+    videoViews75: 0,
+    ctr: 0,
+    linkCtr: 0,
+    roas: 0,
+    costPerLinkClick: 0,
+    costPerResult: 0,
+    hookRate: 0,
+    score: 0,
+  });
+
+  const count = rows.length;
+
+  return {
+    ...latest,
+    spend: totals.spend,
+    impressions: totals.impressions,
+    linkClicks: totals.linkClicks,
+    videoViews3s: totals.videoViews3s,
+    videoViews25: totals.videoViews25,
+    videoViews50: totals.videoViews50,
+    videoViews75: totals.videoViews75,
+    CTR: count > 0 ? totals.ctr / count : latest.CTR,
+    linkCTR: count > 0 ? totals.linkCtr / count : latest.linkCTR,
+    ROAS: count > 0 ? totals.roas / count : latest.ROAS,
+    costPerLinkClick: count > 0 ? totals.costPerLinkClick / count : latest.costPerLinkClick,
+    costPerResult: count > 0 ? totals.costPerResult / count : latest.costPerResult,
+    hookRate: count > 0 ? totals.hookRate / count : latest.hookRate,
+    score: count > 0 ? Math.round(totals.score / count) : latest.score,
+    snapshot_date: latest.snapshot_date,
+  };
+};
 
 export default function CreativesPage() {
   const { theme } = useTheme();
-  const { creatives, createCreative, syncAdsData, isFetching, formatCurrency, needsFirstSync, aiAssistantEnabled, creativeAnalysisEnabled, leads, profitData } = useDatabase();
+  const { adsData, creatives, creativeHistory, createCreative, syncAdsData, isFetching, formatCurrency, needsFirstSync, aiAssistantEnabled, creativeAnalysisEnabled, leads, profitData } = useDatabase();
   const { currentWorkspace } = useWorkspace();
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [summaryView, setSummaryView] = useState<SummaryView>('today');
+  const [customFromDate, setCustomFromDate] = useState(formatDateInputValue(new Date()));
+  const [customToDate, setCustomToDate] = useState(formatDateInputValue(new Date()));
   const [showFilters, setShowFilters] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [expandedCreativeId, setExpandedCreativeId] = useState<string | null>(null);
@@ -143,8 +232,45 @@ export default function CreativesPage() {
     [creatives]
   );
 
+  const todayKey = formatDateInputValue(new Date());
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterdayKey = formatDateInputValue(yesterdayDate);
+  const normalizedFromDate = customFromDate <= customToDate ? customFromDate : customToDate;
+  const normalizedToDate = customFromDate <= customToDate ? customToDate : customFromDate;
+
+  const rangedCreatives = useMemo(() => {
+    const historySource = creativeHistory.length > 0 ? creativeHistory : creatives;
+    const uploadedCreatives = creatives.filter((creative) => creative.origin === 'uploaded');
+    const syncedHistory = historySource.filter((creative) => creative.origin !== 'uploaded');
+
+    const scopedSyncedRows = syncedHistory.filter((creative) => {
+      if (!creative.snapshot_date) {
+        return summaryView === 'maximum';
+      }
+      if (summaryView === 'today') return creative.snapshot_date === todayKey;
+      if (summaryView === 'yesterday') return creative.snapshot_date === yesterdayKey;
+      if (summaryView === 'custom') return creative.snapshot_date >= normalizedFromDate && creative.snapshot_date <= normalizedToDate;
+      return true;
+    });
+
+    const grouped = new Map<string, typeof creatives[number][]>();
+    scopedSyncedRows.forEach((creative) => {
+      const key = buildCreativeRangeKey(creative);
+      const current = grouped.get(key) || [];
+      current.push(creative);
+      grouped.set(key, current);
+    });
+
+    const aggregatedSynced = [...grouped.values()]
+      .map((rows) => aggregateCreativeRange(rows))
+      .filter(Boolean) as typeof creatives;
+
+    return [...uploadedCreatives, ...aggregatedSynced].sort((a, b) => ((b.score || 0) + (b.ROAS || 0) + (b.CTR || 0)) - ((a.score || 0) + (a.ROAS || 0) + (a.CTR || 0)));
+  }, [creativeHistory, creatives, normalizedFromDate, normalizedToDate, summaryView, todayKey, yesterdayKey]);
+
   const filteredCreatives = useMemo(() => {
-    return sortedCreatives.filter((creative) => {
+    return rangedCreatives.filter((creative) => {
       const matchesPlatform = platformFilter === 'all'
         ? true
         : platformFilter === 'uploaded'
@@ -153,12 +279,40 @@ export default function CreativesPage() {
       const matchesStatus = statusFilter === 'all' ? true : creative.status === statusFilter;
       return matchesPlatform && matchesStatus;
     });
-  }, [platformFilter, sortedCreatives, statusFilter]);
+  }, [platformFilter, rangedCreatives, statusFilter]);
+
+  const summaryViewLabel = summaryView === 'today'
+    ? 'Today'
+    : summaryView === 'yesterday'
+    ? 'Yesterday'
+    : summaryView === 'custom'
+    ? `${new Date(normalizedFromDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} to ${new Date(normalizedToDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : 'Maximum / Total';
+
+  const creativeMetrics = useMemo(() => {
+    const visibleSynced = filteredCreatives.filter((creative) => creative.origin !== 'uploaded');
+    const totalSpend = visibleSynced.reduce((sum, creative) => sum + Number(creative.spend || 0), 0);
+    const totalClicks = visibleSynced.reduce((sum, creative) => sum + Number(creative.linkClicks || 0), 0);
+    const avgCtr = visibleSynced.length > 0
+      ? visibleSynced.reduce((sum, creative) => sum + Number(creative.CTR || 0), 0) / visibleSynced.length
+      : 0;
+    const avgRoas = visibleSynced.length > 0
+      ? visibleSynced.reduce((sum, creative) => sum + Number(creative.ROAS || 0), 0) / visibleSynced.length
+      : 0;
+
+    return {
+      totalSpend,
+      totalClicks,
+      avgCtr,
+      avgRoas,
+      count: visibleSynced.length,
+    };
+  }, [filteredCreatives]);
 
   const summaryCards = useMemo(() => {
-    const topPerformer = sortedCreatives[0];
-    const fatigueCount = creatives.filter((creative) => creative.fatigue !== 'low').length;
-    const weakHookCount = creatives.filter((creative) => creative.hook_strength < 60).length;
+    const topPerformer = rangedCreatives[0];
+    const fatigueCount = rangedCreatives.filter((creative) => creative.fatigue !== 'low').length;
+    const weakHookCount = rangedCreatives.filter((creative) => creative.hook_strength < 60).length;
     const cleanedTopPerformerName = topPerformer ? cleanCreativeTitle(topPerformer.creative_name) : null;
 
     return [
@@ -187,7 +341,7 @@ export default function CreativesPage() {
         bg: 'bg-amber-100',
       },
     ];
-  }, [creatives, sortedCreatives]);
+  }, [rangedCreatives]);
 
   const targetCpl = profitData.CPL > 0 ? profitData.CPL : 20;
   const maxCpl = targetCpl * 1.5;
@@ -352,6 +506,102 @@ export default function CreativesPage() {
         </div>
       </div>
 
+      <div className="mb-8 flex flex-col gap-4 rounded-[2rem] border border-outline-variant/10 bg-surface-container-low px-5 py-5 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-secondary">Creative Window</p>
+          <h2 className="mt-2 text-xl font-black text-on-surface">Creative Spend by Date</h2>
+          <p className="mt-2 text-sm text-on-surface-variant">
+            Use the same date controls here when Meta spend differs by day. Creative cards now follow the selected summary window too.
+          </p>
+        </div>
+        <div className="flex flex-col gap-3 md:items-end">
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-surface-container-high p-1.5">
+            {([
+              { id: 'today', label: 'Today' },
+              { id: 'yesterday', label: 'Yesterday' },
+              { id: 'custom', label: 'Custom Range' },
+              { id: 'maximum', label: 'Maximum / Total' },
+            ] as Array<{ id: SummaryView; label: string }>).map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setSummaryView(option.id)}
+                className={`rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] transition-all ${
+                  summaryView === option.id ? 'bg-primary text-white shadow-sm' : 'text-on-surface-variant hover:text-on-surface'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {summaryView === 'custom' && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">From</span>
+                <input
+                  type="date"
+                  value={customFromDate}
+                  onChange={(event) => setCustomFromDate(event.target.value)}
+                  className="w-full rounded-2xl border border-outline-variant/20 bg-surface px-4 py-3 text-sm font-semibold text-on-surface outline-none"
+                />
+              </label>
+              <label className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-on-surface-variant">To</span>
+                <input
+                  type="date"
+                  value={customToDate}
+                  onChange={(event) => setCustomToDate(event.target.value)}
+                  className="w-full rounded-2xl border border-outline-variant/20 bg-surface px-4 py-3 text-sm font-semibold text-on-surface outline-none"
+                />
+              </label>
+            </div>
+          )}
+          <p className="text-xs font-medium text-on-surface-variant">{summaryViewLabel}</p>
+        </div>
+      </div>
+
+      <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="panel-surface rounded-[1.7rem] p-5">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-primary/10 p-3 text-primary"><Wallet size={20} /></div>
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Total Spend</p>
+              <p className="mt-2 text-2xl font-black text-on-surface">{formatCurrency(creativeMetrics.totalSpend)}</p>
+              <p className="mt-2 text-xs text-on-surface-variant">{summaryViewLabel} across visible synced creatives</p>
+            </div>
+          </div>
+        </div>
+        <div className="panel-surface rounded-[1.7rem] p-5">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-secondary/10 p-3 text-secondary"><MousePointerClick size={20} /></div>
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Total Link Clicks</p>
+              <p className="mt-2 text-2xl font-black text-on-surface">{creativeMetrics.totalClicks.toLocaleString()}</p>
+              <p className="mt-2 text-xs text-on-surface-variant">{summaryViewLabel} click volume from visible creatives</p>
+            </div>
+          </div>
+        </div>
+        <div className="panel-surface rounded-[1.7rem] p-5">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-blue-500/10 p-3 text-blue-500"><BarChart3 size={20} /></div>
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Avg CTR</p>
+              <p className="mt-2 text-2xl font-black text-on-surface">{creativeMetrics.avgCtr.toFixed(2)}%</p>
+              <p className="mt-2 text-xs text-on-surface-variant">{summaryViewLabel} average click-through rate</p>
+            </div>
+          </div>
+        </div>
+        <div className="panel-surface rounded-[1.7rem] p-5">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-emerald-500/10 p-3 text-emerald-500"><CalendarDays size={20} /></div>
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Visible Creatives</p>
+              <p className="mt-2 text-2xl font-black text-on-surface">{creativeMetrics.count}</p>
+              <p className="mt-2 text-xs text-on-surface-variant">{summaryViewLabel} creative set in the library</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {showFilters && (
         <div className="panel-surface mb-8 grid gap-4 rounded-[2rem] p-6 md:grid-cols-2 xl:grid-cols-4">
           <label className="flex flex-col gap-2 text-sm font-bold text-on-surface">
@@ -494,10 +744,22 @@ export default function CreativesPage() {
       ) : (
         <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
           {filteredCreatives.map((creative) => {
-            const fatigueStyles = getFatigueStyles(creative.fatigue);
+            const linkedCampaign = adsData.find((campaign) =>
+              (creative.campaign_external_id && campaign.id === creative.campaign_external_id)
+              || (creative.campaign_name && campaign.campaign_name === creative.campaign_name)
+            );
+            const isCampaignLive = isActiveCampaignDelivery(linkedCampaign?.delivery);
+            const hasLiveData = hasLiveCreativeDelivery(creative) || isCampaignLive;
+            const presentationStatus = !hasLiveCreativeDelivery(creative) && isCampaignLive ? 'TESTING' : creative.status;
+            const presentationFatigue = !hasLiveCreativeDelivery(creative) && isCampaignLive ? 'low' : creative.fatigue;
+            const fatigueStyles = getFatigueStyles(presentationFatigue);
             const isExpanded = expandedCreativeId === creative.id;
             const resolvedSuggestions = liveSuggestions[creative.id]?.suggestions || creative.suggestions || [];
-            const resolvedSummary = liveSuggestions[creative.id]?.summary || creative.analysis_summary || 'Analysis pending';
+            const resolvedSummary = liveSuggestions[creative.id]?.summary
+              || (!hasLiveCreativeDelivery(creative) && isCampaignLive
+                ? 'This creative is already live in Meta and waiting for enough delivery data before fatigue or winner labels are applied.'
+                : creative.analysis_summary)
+              || 'Analysis pending';
             const fatigueSummary = stripExistingPostSentence(resolvedSummary);
             const suggestionProvider = liveSuggestions[creative.id]?.provider;
             const existingPostId = extractExistingPostId(creative.creative_name);
@@ -508,7 +770,6 @@ export default function CreativesPage() {
               : primaryMediaUrl;
             const isVideo = isLikelyVideoCreative(creative);
             const canRenderVideo = isVideo && looksLikePlayableVideoUrl(previewUrl);
-            const hasLiveData = hasLiveCreativeDelivery(creative);
             const scoreLabel = hasLiveData ? 'Live Performance Score' : 'Rule-Based Prelaunch Score';
             const showDetails = expandedDetailId === creative.id;
             const linkedLeads = leads.filter((lead) => lead.creative_name === creative.creative_name);
@@ -524,7 +785,7 @@ export default function CreativesPage() {
                     <img src={previewUrl} alt={displayTitle} className="h-full w-full object-cover" />
                   )}
                   <div className="absolute left-4 top-4 flex flex-wrap gap-2">
-                    <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${getStatusStyles(creative.status)}`}>{creative.status}</span>
+                    <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${getStatusStyles(presentationStatus)}`}>{presentationStatus}</span>
                     {creative.origin === 'uploaded' && <span className="rounded-full bg-black/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-white">Draft Upload</span>}
                   </div>
                   <div className="absolute right-4 top-4 flex gap-2">
@@ -594,7 +855,7 @@ export default function CreativesPage() {
                       </div>
                       <div className="flex shrink-0 items-center gap-2 rounded-full bg-surface px-2.5 py-1.5">
                         <div className={`h-2.5 w-2.5 rounded-full ${fatigueStyles.split(' ')[0]}`} />
-                        <span className={`text-xs font-bold capitalize ${fatigueStyles.split(' ')[1]}`}>{creative.fatigue} fatigue</span>
+                        <span className={`text-xs font-bold capitalize ${fatigueStyles.split(' ')[1]}`}>{presentationFatigue} fatigue</span>
                       </div>
                     </div>
                   </div>

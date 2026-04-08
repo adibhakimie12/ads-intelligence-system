@@ -24,7 +24,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useAuth } from '../context/AuthContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { checkMetaSetup } from '../services/metaSetup';
-import { beginMetaConnection, selectPrimaryMetaAdAccount, syncPrimaryMetaAccount } from '../services/metaIntegration';
+import { beginMetaConnection, selectPrimaryMetaAdAccount, updateMetaAdAccountManualFunds } from '../services/metaIntegration';
 import { validateGoogleAiKey } from '../services/googleAiValidation';
 import { validateOpenAiKey } from '../services/openAiValidation';
 import { getWorkspaceSettings, upsertWorkspaceSettings } from '../services/workspaceSettings';
@@ -32,6 +32,7 @@ import { useTheme } from '../context/ThemeContext';
 import { CurrencyCode } from '../types';
 import type { PlanTier, UpgradeTrigger } from '../App';
 import type { WorkspaceSettings } from '../types';
+import { getMetaSyncRangeLabel, getStoredMetaSyncRange, storeMetaSyncRange, type MetaSyncRange } from '../utils/metaSyncRange';
 
 const API_KEYS_STORAGE_PREFIX = 'ads-intel-settings-api-keys';
 const AI_CONNECTION_STORAGE_PREFIX = 'ads-intel-settings-ai-connections';
@@ -46,6 +47,23 @@ const maskApiKey = (value: string) => {
   if (!value) return '';
   if (value.length <= 8) return value;
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
+};
+
+const formatAccountMoney = (amount?: number | null, currency = 'MYR') => {
+  if (amount == null || Number.isNaN(amount)) {
+    return null;
+  }
+
+  try {
+    return new Intl.NumberFormat('en-MY', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
 };
 
 type AiProviderStatus = 'not_tested' | 'testing' | 'connected' | 'error';
@@ -581,7 +599,11 @@ export default function SettingsPage({
 
   const [isConnectingMeta, setIsConnectingMeta] = useState(false);
   const [isSelectingMetaAccount, setIsSelectingMetaAccount] = useState<string | null>(null);
+  const [editingManualFundsAccountId, setEditingManualFundsAccountId] = useState<string | null>(null);
+  const [manualFundsInput, setManualFundsInput] = useState('');
+  const [isSavingManualFunds, setIsSavingManualFunds] = useState<string | null>(null);
   const [isSyncingWorkspaceMeta, setIsSyncingWorkspaceMeta] = useState(false);
+  const [metaSyncRange, setMetaSyncRange] = useState<MetaSyncRange>('today');
   const [metaFeedback, setMetaFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [openAiFeedback, setOpenAiFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -1076,8 +1098,47 @@ export default function SettingsPage({
     setMetaFeedback(null);
 
     try {
-      const result = await syncPrimaryMetaAccount(currentWorkspace.id);
+      // Use the shared database sync pipeline so campaigns, creatives, insights,
+      // and workspace summaries refresh together from the same Meta sync result.
+      await syncAdsData('meta');
+      setMetaFeedback({
+        type: 'success',
+        message: `Meta workspace sync completed using ${getMetaSyncRangeLabel(metaSyncRange)}. Campaigns, creatives, insights, and summary data were refreshed.`,
+      });
+      await refreshWorkspaceData();
+    } finally {
+      setIsSyncingWorkspaceMeta(false);
+    }
+  };
 
+  const handleStartManualFundsEdit = (adAccountId: string, currentValue?: number | null) => {
+    setEditingManualFundsAccountId(adAccountId);
+    setManualFundsInput(currentValue != null ? String(currentValue) : '');
+  };
+
+  const handleSaveManualFunds = async (adAccountId: string) => {
+    if (!currentWorkspace) {
+      setMetaFeedback({
+        type: 'error',
+        message: 'No active workspace was found for this account yet.',
+      });
+      return;
+    }
+
+    const nextValue = manualFundsInput.trim() === '' ? null : Number(manualFundsInput);
+    if (nextValue != null && (Number.isNaN(nextValue) || nextValue < 0)) {
+      setMetaFeedback({
+        type: 'error',
+        message: 'Manual funds must be a valid positive number.',
+      });
+      return;
+    }
+
+    setIsSavingManualFunds(adAccountId);
+    setMetaFeedback(null);
+
+    try {
+      const result = await updateMetaAdAccountManualFunds(currentWorkspace.id, adAccountId, nextValue);
       if (!result.ok) {
         setMetaFeedback({
           type: 'error',
@@ -1086,16 +1147,58 @@ export default function SettingsPage({
         return;
       }
 
-      setAdsData(result.campaigns);
       setMetaFeedback({
         type: 'success',
-        message: `${result.campaigns.length} campaign snapshot${result.campaigns.length === 1 ? '' : 's'} synced from ${result.connectedAccount.name || 'the selected Meta account'}.`,
+        message: nextValue == null
+          ? 'Manual fund override cleared.'
+          : `Manual fund updated to ${formatAccountMoney(nextValue, currency)}.`,
       });
+      setEditingManualFundsAccountId(null);
+      setManualFundsInput('');
       await refreshWorkspaceData();
     } finally {
-      setIsSyncingWorkspaceMeta(false);
+      setIsSavingManualFunds(null);
     }
   };
+
+  const handleClearManualFunds = async (adAccountId: string) => {
+    setManualFundsInput('');
+    if (!currentWorkspace) {
+      setMetaFeedback({
+        type: 'error',
+        message: 'No active workspace was found for this account yet.',
+      });
+      return;
+    }
+
+    setIsSavingManualFunds(adAccountId);
+    setMetaFeedback(null);
+
+    try {
+      const result = await updateMetaAdAccountManualFunds(currentWorkspace.id, adAccountId, null);
+      if (!result.ok) {
+        setMetaFeedback({
+          type: 'error',
+          message: result.error,
+        });
+        return;
+      }
+
+      setMetaFeedback({
+        type: 'success',
+        message: 'Manual fund override cleared.',
+      });
+      setEditingManualFundsAccountId(null);
+      await refreshWorkspaceData();
+    } finally {
+      setIsSavingManualFunds(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentWorkspace) return;
+    setMetaSyncRange(getStoredMetaSyncRange(currentWorkspace.id));
+  }, [currentWorkspace?.id]);
 
   const handleDiscardChanges = async () => {
     if (!currentWorkspace) {
@@ -1749,7 +1852,27 @@ export default function SettingsPage({
                       Keep these buttons available now so backend sync flows already have clear entry points.
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="flex min-w-[180px] flex-col gap-2">
+                      <span className={`text-[11px] font-bold uppercase tracking-[0.18em] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Meta Sync Range</span>
+                      <select
+                        value={metaSyncRange}
+                        onChange={(event) => {
+                          const nextValue = event.target.value as MetaSyncRange;
+                          setMetaSyncRange(nextValue);
+                          storeMetaSyncRange(currentWorkspace?.id, nextValue);
+                        }}
+                        className={`rounded-xl border px-3 py-2 text-xs font-bold outline-none ${
+                          theme === 'dark' ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-slate-200 bg-white text-slate-900'
+                        }`}
+                      >
+                        <option value="today">Today</option>
+                        <option value="yesterday">Yesterday</option>
+                        <option value="last_7d">Last 7 Days</option>
+                        <option value="last_30d">Last 30 Days</option>
+                        <option value="maximum">Maximum / Lifetime</option>
+                      </select>
+                    </label>
                     <button
                       id="settings-sync-meta-live"
                       type="button"
@@ -1787,36 +1910,132 @@ export default function SettingsPage({
                     {metaAdAccounts.map((account) => {
                       const isPrimary = primaryMetaAccountId === account.meta_ad_account_id;
                       const isSaving = isSelectingMetaAccount === account.meta_ad_account_id;
+                      const isEditingManualFunds = editingManualFundsAccountId === account.meta_ad_account_id;
+                      const isSavingFunds = isSavingManualFunds === account.meta_ad_account_id;
+                      const availableFunds = formatAccountMoney(account.available_funds, account.account_currency || 'MYR');
+                      const manualAvailableFunds = formatAccountMoney(account.manual_available_funds, account.account_currency || 'MYR');
+                      const dailyLimit = formatAccountMoney(account.daily_spending_limit, account.account_currency || 'MYR');
+                      const amountSpent = formatAccountMoney(account.amount_spent, account.account_currency || 'MYR');
+                      const displayFunds = manualAvailableFunds || availableFunds;
 
                       return (
-                        <button
+                        <div
                           key={account.id}
-                          type="button"
-                          onClick={() => void handleSelectMetaAccount(account.meta_ad_account_id)}
-                          disabled={isSaving}
                           className={`rounded-2xl border p-4 text-left transition ${
                             isPrimary
                               ? theme === 'dark' ? 'border-blue-500/40 bg-blue-950/30' : 'border-blue-200 bg-blue-50'
                               : theme === 'dark' ? 'border-slate-700 bg-slate-800 hover:border-slate-600' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                          } ${isSaving ? 'cursor-wait opacity-70' : ''}`}
+                          } ${isSaving ? 'opacity-70' : ''}`}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className={`text-sm font-semibold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{account.ad_account_name}</p>
                               <p className={`mt-1 text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>{account.meta_ad_account_id}</p>
                             </div>
-                            <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
-                              isPrimary ? 'bg-blue-600 text-white' : theme === 'dark' ? 'bg-slate-900 text-slate-300' : 'bg-white text-slate-600'
-                            }`}>
-                              {isSaving ? 'Saving' : isPrimary ? 'Primary' : 'Select'}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void handleSelectMetaAccount(account.meta_ad_account_id)}
+                                disabled={isSaving}
+                                className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                                  isPrimary ? 'bg-blue-600 text-white' : theme === 'dark' ? 'bg-slate-900 text-slate-300' : 'bg-white text-slate-600'
+                                }`}
+                              >
+                                {isSaving ? 'Saving' : isPrimary ? 'Primary' : 'Select'}
+                              </button>
+                            </div>
                           </div>
                           <div className={`mt-4 flex items-center gap-2 text-[11px] font-semibold ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
                             <span>{account.account_currency || 'No currency'}</span>
                             <span className={`h-1 w-1 rounded-full ${theme === 'dark' ? 'bg-slate-600' : 'bg-slate-300'}`} />
                             <span>{account.account_status || 'Status unknown'}</span>
                           </div>
-                        </button>
+                          <div className={`mt-4 rounded-2xl border px-3 py-3 ${
+                            theme === 'dark' ? 'border-slate-700 bg-slate-900/80' : 'border-slate-200 bg-white/80'
+                          }`}>
+                            <div className="flex items-center justify-between gap-3">
+                              <p className={`text-[10px] font-black uppercase tracking-[0.18em] ${theme === 'dark' ? 'text-slate-500' : 'text-slate-500'}`}>
+                                Available Funds
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleStartManualFundsEdit(account.meta_ad_account_id, account.manual_available_funds)}
+                                className={`text-[10px] font-black uppercase tracking-[0.16em] ${
+                                  theme === 'dark' ? 'text-blue-300 hover:text-blue-200' : 'text-blue-600 hover:text-blue-700'
+                                }`}
+                              >
+                                {account.manual_available_funds != null ? 'Edit Manual' : 'Set Manual'}
+                              </button>
+                            </div>
+                            <p className={`mt-2 text-lg font-black ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>
+                              {displayFunds || 'Not available yet'}
+                            </p>
+                            <div className={`mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                              {manualAvailableFunds && <span>Manual override active</span>}
+                              {manualAvailableFunds && availableFunds && <span className={`h-1 w-1 rounded-full ${theme === 'dark' ? 'bg-slate-600' : 'bg-slate-300'}`} />}
+                              {availableFunds && <span>Meta API balance {availableFunds}</span>}
+                              {availableFunds && amountSpent && <span className={`h-1 w-1 rounded-full ${theme === 'dark' ? 'bg-slate-600' : 'bg-slate-300'}`} />}
+                              {amountSpent && <span>Spent {amountSpent}</span>}
+                              {dailyLimit && <span>Daily limit {dailyLimit}</span>}
+                            </div>
+                            {isEditingManualFunds && (
+                              <div className="mt-4 rounded-2xl border border-dashed border-blue-400/40 px-3 py-3">
+                                <label className={`block text-[10px] font-black uppercase tracking-[0.16em] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  Manual Fund
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={manualFundsInput}
+                                  onChange={(event) => setManualFundsInput(event.target.value)}
+                                  placeholder="56.11"
+                                  className={`mt-2 w-full rounded-xl border px-3 py-2 text-sm font-semibold outline-none ${
+                                    theme === 'dark'
+                                      ? 'border-slate-700 bg-slate-800 text-slate-100'
+                                      : 'border-slate-200 bg-white text-slate-900'
+                                  }`}
+                                />
+                                <p className={`mt-2 text-[11px] ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  Use this if you want the card to match the exact prepaid funds shown in Meta Billing.
+                                </p>
+                                <div className="mt-3 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSaveManualFunds(account.meta_ad_account_id)}
+                                    disabled={isSavingFunds}
+                                    className="rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-bold text-white"
+                                  >
+                                    {isSavingFunds ? 'Saving...' : 'Save'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingManualFundsAccountId(null);
+                                      setManualFundsInput('');
+                                    }}
+                                    className={`rounded-xl px-3 py-2 text-[11px] font-bold ${
+                                      theme === 'dark' ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-700'
+                                    }`}
+                                  >
+                                    Cancel
+                                  </button>
+                                  {account.manual_available_funds != null && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleClearManualFunds(account.meta_ad_account_id)}
+                                      className={`rounded-xl px-3 py-2 text-[11px] font-bold ${
+                                        theme === 'dark' ? 'text-rose-300' : 'text-rose-600'
+                                      }`}
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>

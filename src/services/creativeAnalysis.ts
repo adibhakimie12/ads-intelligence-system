@@ -75,6 +75,7 @@ export const analyzeCreative = (input: CreativeAnalysisInput) => {
   const spend = input.spend || 0;
   const leadCount = input.leadCount || 0;
   const wonLeadCount = input.wonLeadCount || 0;
+  const hasPerformanceSignal = spend > 0 || ctr > 0 || roas > 0 || leadCount > 0 || wonLeadCount > 0;
   const lowerName = input.creativeName.toLowerCase();
 
   const hookKeywordBonus = /(stop|secret|before|after|mistake|why|how|sale|save|hook|boost|free)/i.test(lowerName) ? 8 : 0;
@@ -100,7 +101,7 @@ export const analyzeCreative = (input: CreativeAnalysisInput) => {
     status = 'KILL';
   } else if (score >= 80 && ctr >= 1.5 && roas >= 2) {
     status = 'WINNING';
-  } else if (fatigue === 'medium' || ctr < 1) {
+  } else if (hasPerformanceSignal && (fatigue === 'medium' || ctr < 1)) {
     status = 'FATIGUE DETECTED';
   } else if (score < 55 && roas <= 1.2) {
     status = 'COLD TEST';

@@ -41,6 +41,10 @@ export interface MetaAdAccount {
   ad_account_name: string;
   account_status?: string | null;
   account_currency?: string | null;
+  available_funds?: number | null;
+  amount_spent?: number | null;
+  daily_spending_limit?: number | null;
+  manual_available_funds?: number | null;
   is_primary: boolean;
   created_at: string;
 }

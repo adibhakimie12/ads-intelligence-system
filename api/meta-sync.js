@@ -1,4 +1,4 @@
-import { fetchMetaAdCreatives, fetchMetaCampaignInsights } from './_lib/meta-graph.js';
+import { fetchMetaAdAccountBilling, fetchMetaAdAccounts, fetchMetaAdCreatives, fetchMetaCampaignInsights, fetchMetaLeadGenForms, fetchMetaLeadGenLeads, resolveDailyPresetDate } from './_lib/meta-graph.js';
 import { buildCreativeSnapshotsFromAds } from './_lib/creative-engine.js';
 import { generateInsightsFromCampaigns } from './_lib/insight-engine.js';
 import { isSupabaseServerConfigured, supabaseAdmin, supabaseAuthClient } from './_lib/supabase-admin.js';
@@ -76,6 +76,69 @@ const toUiCreative = (creative) => ({
   snapshot_date: creative.snapshot_date,
 });
 
+const toUiLead = (lead) => ({
+  id: lead.id,
+  workspace_id: lead.workspace_id,
+  name: lead.name,
+  source: lead.source,
+  campaign: lead.campaign,
+  value: Number(lead.value || 0),
+  status: lead.status,
+  date: lead.lead_date,
+  score: lead.lead_score,
+  insight: lead.insight,
+  recommendedAction: lead.recommended_action,
+  notes: lead.notes || undefined,
+  creative_name: lead.creative_name,
+  creative_type: lead.creative_type,
+  hook_tag: lead.hook_tag || undefined,
+  adset_name: lead.adset_name || undefined,
+  quality_score: lead.quality_score,
+  ctr: Number(lead.ctr || 0),
+  cpl: Number(lead.cpl || 0),
+  conversionRate: Number(lead.conversion_rate || 0),
+});
+
+const pickFirstNonEmpty = (...values) =>
+  values.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || null;
+
+const buildMetaLeadName = (fields = {}) => {
+  const fullName = pickFirstNonEmpty(
+    fields.full_name,
+    fields.fullname,
+    [fields.first_name, fields.last_name].filter(Boolean).join(' ').trim()
+  );
+
+  if (fullName) {
+    return fullName;
+  }
+
+  return pickFirstNonEmpty(fields.email, fields.phone_number, fields.phone, fields.whatsapp_number) || 'Meta Lead';
+};
+
+const buildMetaLeadNotes = (fields = {}, formName) => {
+  const noteParts = [
+    pickFirstNonEmpty(fields.email) ? `Email: ${pickFirstNonEmpty(fields.email)}` : null,
+    pickFirstNonEmpty(fields.phone_number, fields.phone, fields.whatsapp_number)
+      ? `Phone: ${pickFirstNonEmpty(fields.phone_number, fields.phone, fields.whatsapp_number)}`
+      : null,
+    formName ? `Form: ${formName}` : null,
+  ].filter(Boolean);
+
+  return noteParts.join(' | ') || null;
+};
+
+const deriveMetaLeadScore = (fields = {}) => {
+  const hasPhone = Boolean(pickFirstNonEmpty(fields.phone_number, fields.phone, fields.whatsapp_number));
+  const hasEmail = Boolean(pickFirstNonEmpty(fields.email));
+
+  if (hasPhone && hasEmail) return 'high';
+  if (hasPhone || hasEmail) return 'medium';
+  return 'low';
+};
+
+const buildMessagingProxyLeadName = (campaignName, index) => `WhatsApp Prospect ${String(index).padStart(2, '0')}`;
+
 const buildWorkspaceSummary = (workspaceId, snapshotDate, campaigns) => {
   const totalSpend = campaigns.reduce((sum, campaign) => sum + campaign.spend, 0);
   const totalRevenue = campaigns.reduce((sum, campaign) => sum + (campaign.spend * campaign.roas), 0);
@@ -129,7 +192,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Invalid user session.' });
   }
 
-  const { workspaceId } = req.body || {};
+  const { workspaceId, syncRange = 'today' } = req.body || {};
   if (!workspaceId) {
     return res.status(400).json({ error: 'workspaceId is required.' });
   }
@@ -155,15 +218,46 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: 'No Meta connection was found for this workspace.' });
   }
 
-  if (!connection.connected_account_id) {
-    return res.status(400).json({ error: 'Select a primary Meta ad account before syncing.' });
+  let resolvedConnectedAccountId = connection.connected_account_id || null;
+  let resolvedConnectedAccountName = connection.connected_account_name || null;
+
+  if (!resolvedConnectedAccountId) {
+    const { data: fallbackAccounts, error: fallbackAccountsError } = await supabaseAdmin
+      .from('meta_ad_accounts')
+      .select('meta_ad_account_id, ad_account_name, is_primary, created_at')
+      .eq('workspace_id', workspaceId)
+      .order('is_primary', { ascending: false })
+      .order('created_at', { ascending: true });
+
+    if (fallbackAccountsError) {
+      return res.status(500).json({ error: fallbackAccountsError.message });
+    }
+
+    const fallbackAccount = (fallbackAccounts || []).find((account) => account.is_primary)
+      || ((fallbackAccounts || []).length === 1 ? fallbackAccounts[0] : null);
+
+    if (!fallbackAccount) {
+      return res.status(400).json({ error: 'Select a primary Meta ad account before syncing.' });
+    }
+
+    resolvedConnectedAccountId = fallbackAccount.meta_ad_account_id;
+    resolvedConnectedAccountName = fallbackAccount.ad_account_name;
+
+    await supabaseAdmin
+      .from('meta_connections')
+      .update({
+        connected_account_id: resolvedConnectedAccountId,
+        connected_account_name: resolvedConnectedAccountName,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('workspace_id', workspaceId);
   }
 
   if (!connection.access_token_encrypted || !connection.access_token_iv || !connection.access_token_auth_tag) {
     return res.status(400).json({ error: 'The Meta access token is incomplete for this workspace.' });
   }
 
-  const snapshotDate = new Date().toISOString().slice(0, 10);
+  const snapshotDate = resolveDailyPresetDate(syncRange);
   const { data: syncJob, error: syncJobError } = await supabaseAdmin
     .from('sync_jobs')
     .insert({
@@ -186,22 +280,57 @@ export default async function handler(req, res) {
       authTag: connection.access_token_auth_tag,
     });
 
-    const campaigns = await fetchMetaCampaignInsights(accessToken, connection.connected_account_id);
-    const adCreatives = await fetchMetaAdCreatives(accessToken, connection.connected_account_id);
+    let syncedAccountDetails = null;
+    try {
+      syncedAccountDetails = await fetchMetaAdAccountBilling(accessToken, resolvedConnectedAccountId);
+    } catch {
+      const metaAccounts = await fetchMetaAdAccounts(accessToken);
+      const normalizedConnectedAccountId = resolvedConnectedAccountId.replace(/^act_/, '');
+      syncedAccountDetails = metaAccounts.find((account) => {
+        const accountId = String(account.id || '');
+        const normalizedAccountId = accountId.replace(/^act_/, '');
+        return accountId === resolvedConnectedAccountId || normalizedAccountId === normalizedConnectedAccountId;
+      }) || null;
+    }
+
+    if (syncedAccountDetails) {
+      await supabaseAdmin
+        .from('meta_ad_accounts')
+        .update({
+          ad_account_name: syncedAccountDetails.name,
+          account_status: syncedAccountDetails.status,
+          account_currency: syncedAccountDetails.currency,
+          available_funds: syncedAccountDetails.availableFunds,
+          amount_spent: syncedAccountDetails.amountSpent,
+          daily_spending_limit: syncedAccountDetails.dailySpendingLimit,
+        })
+        .eq('workspace_id', workspaceId)
+        .eq('meta_ad_account_id', resolvedConnectedAccountId);
+    }
+
+    const campaigns = await fetchMetaCampaignInsights(accessToken, resolvedConnectedAccountId, syncRange);
+    const adCreatives = await fetchMetaAdCreatives(accessToken, resolvedConnectedAccountId, syncRange);
     const insights = generateInsightsFromCampaigns(campaigns);
     const creativeRows = buildCreativeSnapshotsFromAds(workspaceId, adCreatives, 'meta', snapshotDate);
+    let syncedLeadRows = [];
+    let leadSync = {
+      forms: 0,
+      leadsDiscovered: 0,
+      synced: 0,
+      error: null,
+    };
 
     await supabaseAdmin
       .from('campaign_snapshots')
       .delete()
       .eq('workspace_id', workspaceId)
-      .eq('meta_ad_account_id', connection.connected_account_id)
+      .eq('meta_ad_account_id', resolvedConnectedAccountId)
       .eq('snapshot_date', snapshotDate);
 
     if (campaigns.length > 0) {
       const snapshotRows = campaigns.map((campaign) => ({
         workspace_id: workspaceId,
-        meta_ad_account_id: connection.connected_account_id,
+        meta_ad_account_id: resolvedConnectedAccountId,
         campaign_external_id: campaign.campaignId,
         campaign_name: campaign.campaignName,
         delivery: campaign.delivery,
@@ -284,15 +413,234 @@ export default async function handler(req, res) {
       }
     }
 
-    const summaryRow = buildWorkspaceSummary(workspaceId, snapshotDate, campaigns);
-    const { error: summaryError } = await supabaseAdmin
-      .from('workspace_daily_summaries')
-      .upsert(summaryRow, {
-        onConflict: 'workspace_id,summary_date,provider',
-      });
+    try {
+      const leadForms = await fetchMetaLeadGenForms(accessToken, resolvedConnectedAccountId);
+      leadSync.forms = leadForms.length;
 
-    if (summaryError) {
-      throw new Error(summaryError.message);
+      if (leadForms.length > 0) {
+        const leadCollections = await Promise.all(
+          leadForms.map(async (form) => ({
+            form,
+            leads: await fetchMetaLeadGenLeads(accessToken, form.id),
+          }))
+        );
+
+        const normalizedLeadRows = leadCollections.flatMap(({ form, leads }) =>
+          leads.map((lead) => {
+            const leadScore = deriveMetaLeadScore(lead.fields);
+            const campaignName = pickFirstNonEmpty(lead.campaignName, form.name, resolvedConnectedAccountName, 'Meta Lead Form');
+            const creativeName = pickFirstNonEmpty(lead.adName, form.name, campaignName, 'Meta Lead Form');
+            return {
+              workspace_id: workspaceId,
+              name: buildMetaLeadName(lead.fields),
+              source: 'meta',
+              campaign: campaignName,
+              value: 0,
+              status: 'new',
+              lead_score: leadScore,
+              insight: 'Imported from Meta Lead Ads form submission.',
+              recommended_action: 'Contact this lead while intent is still fresh.',
+              notes: buildMetaLeadNotes(lead.fields, form.name),
+              creative_name: creativeName,
+              creative_type: 'image',
+              hook_tag: 'meta_lead_form',
+              adset_name: lead.adsetName || null,
+              quality_score: leadScore,
+              ctr: 0,
+              cpl: 0,
+              conversion_rate: 0,
+              lead_date: (lead.createdTime || new Date().toISOString()).slice(0, 10),
+              external_source: 'meta_leadgen',
+              external_id: lead.id,
+              external_form_id: form.id,
+              external_created_at: lead.createdTime || null,
+            };
+          })
+        );
+
+        leadSync.leadsDiscovered = normalizedLeadRows.length;
+
+        if (normalizedLeadRows.length > 0) {
+          const { data: persistedLeads, error: leadUpsertError } = await supabaseAdmin
+            .from('leads')
+            .upsert(normalizedLeadRows, {
+              onConflict: 'workspace_id,external_source,external_id',
+            })
+            .select(`
+              id,
+              workspace_id,
+              name,
+              source,
+              campaign,
+              value,
+              status,
+              lead_score,
+              insight,
+              recommended_action,
+              notes,
+              creative_name,
+              creative_type,
+              hook_tag,
+              adset_name,
+              quality_score,
+              ctr,
+              cpl,
+              conversion_rate,
+              lead_date
+            `);
+
+          if (leadUpsertError) {
+            throw new Error(leadUpsertError.message);
+          }
+
+          syncedLeadRows = persistedLeads || [];
+          leadSync.synced = syncedLeadRows.length;
+        }
+      }
+    } catch (leadSyncError) {
+      console.error('Meta lead sync warning:', leadSyncError);
+      leadSync = {
+        ...leadSync,
+        error: leadSyncError instanceof Error ? leadSyncError.message : 'Failed to sync Meta lead forms.',
+      };
+    }
+
+    try {
+      const metaCampaignIds = campaigns.map((campaign) => campaign.campaignId).filter(Boolean);
+
+      if (metaCampaignIds.length > 0) {
+        const { data: existingProxyLeads, error: existingProxyLeadsError } = await supabaseAdmin
+          .from('leads')
+          .select(`
+            id,
+            workspace_id,
+            name,
+            source,
+            campaign,
+            value,
+            status,
+            lead_score,
+            insight,
+            recommended_action,
+            notes,
+            creative_name,
+            creative_type,
+            hook_tag,
+            adset_name,
+            quality_score,
+            ctr,
+            cpl,
+            conversion_rate,
+            lead_date,
+            external_source,
+            external_id
+          `)
+          .eq('workspace_id', workspaceId)
+          .eq('external_source', 'meta_messaging_result');
+
+        if (existingProxyLeadsError) {
+          throw new Error(existingProxyLeadsError.message);
+        }
+
+        const proxyCountByCampaignId = new Map();
+        (existingProxyLeads || []).forEach((lead) => {
+          const campaignExternalId = typeof lead.external_id === 'string' ? lead.external_id.split(':')[0] : '';
+          if (!campaignExternalId) {
+            return;
+          }
+          proxyCountByCampaignId.set(campaignExternalId, (proxyCountByCampaignId.get(campaignExternalId) || 0) + 1);
+        });
+
+        const missingProxyLeadRows = campaigns.flatMap((campaign) => {
+          const desiredLeadCount = Math.max(0, Number(campaign.conversions || 0));
+          const existingLeadCount = proxyCountByCampaignId.get(campaign.campaignId) || 0;
+          const additionalLeadCount = Math.max(0, desiredLeadCount - existingLeadCount);
+
+          if (additionalLeadCount === 0) {
+            return [];
+          }
+
+          return Array.from({ length: additionalLeadCount }, (_, offset) => {
+            const sequence = existingLeadCount + offset + 1;
+            return {
+              workspace_id: workspaceId,
+              name: buildMessagingProxyLeadName(campaign.campaignName, sequence),
+              source: 'meta',
+              campaign: campaign.campaignName,
+              value: 0,
+              status: 'new',
+              lead_score: 'medium',
+              insight: 'Auto-created from Meta messaging conversation started results.',
+              recommended_action: 'Open WhatsApp and identify the matching conversation for follow-up.',
+              notes: 'This lead was created from campaign messaging results because direct WhatsApp contact data is not connected yet.',
+              creative_name: `${campaign.campaignName}_WhatsApp`,
+              creative_type: 'image',
+              hook_tag: 'meta_messaging_conversation_started',
+              adset_name: null,
+              quality_score: 'medium',
+              ctr: Number(campaign.ctr || 0),
+              cpl: Number(campaign.costPerResult || 0),
+              conversion_rate: 0,
+              lead_date: snapshotDate,
+              external_source: 'meta_messaging_result',
+              external_id: `${campaign.campaignId}:${sequence}`,
+              external_form_id: null,
+              external_created_at: new Date().toISOString(),
+            };
+          });
+        });
+
+        if (missingProxyLeadRows.length > 0) {
+          const { data: insertedProxyLeads, error: insertedProxyLeadsError } = await supabaseAdmin
+            .from('leads')
+            .insert(missingProxyLeadRows)
+            .select(`
+              id,
+              workspace_id,
+              name,
+              source,
+              campaign,
+              value,
+              status,
+              lead_score,
+              insight,
+              recommended_action,
+              notes,
+              creative_name,
+              creative_type,
+              hook_tag,
+              adset_name,
+              quality_score,
+              ctr,
+              cpl,
+              conversion_rate,
+              lead_date
+            `);
+
+          if (insertedProxyLeadsError) {
+            throw new Error(insertedProxyLeadsError.message);
+          }
+
+          syncedLeadRows = syncedLeadRows.concat(insertedProxyLeads || []);
+        }
+      }
+    } catch (proxyLeadError) {
+      console.error('Meta messaging proxy lead warning:', proxyLeadError);
+    }
+
+    const shouldPersistDailySummary = syncRange === 'today' || syncRange === 'yesterday';
+    const summaryRow = shouldPersistDailySummary ? buildWorkspaceSummary(workspaceId, snapshotDate, campaigns) : null;
+
+    if (summaryRow) {
+      const { error: summaryError } = await supabaseAdmin
+        .from('workspace_daily_summaries')
+        .upsert(summaryRow, {
+          onConflict: 'workspace_id,summary_date,provider',
+        });
+
+      if (summaryError) {
+        throw new Error(summaryError.message);
+      }
     }
 
     const finishedAt = new Date().toISOString();
@@ -318,13 +666,15 @@ export default async function handler(req, res) {
       success: true,
       syncedAt: finishedAt,
       connectedAccount: {
-        id: connection.connected_account_id,
-        name: connection.connected_account_name,
+        id: resolvedConnectedAccountId,
+        name: resolvedConnectedAccountName,
       },
       summary: summaryRow,
       campaigns: campaigns.map((campaign) => toUiCampaign(campaign, snapshotDate)),
       creatives: creativeRows.map((creative) => toUiCreative(creative)),
       insights: insights.map((insight, index) => toUiInsight(insight, index)),
+      leads: syncedLeadRows.map((lead) => toUiLead(lead)),
+      leadSync,
     });
   } catch (syncError) {
     console.error('Meta sync error:', syncError);

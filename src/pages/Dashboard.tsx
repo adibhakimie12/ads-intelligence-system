@@ -15,6 +15,8 @@ import CampaignTable from '../components/CampaignTable';
 import ProfitChart from '../components/ProfitChart';
 import { useDatabase } from '../context/DatabaseContext';
 import { useTheme } from '../context/ThemeContext';
+import { useWorkspace } from '../context/WorkspaceContext';
+import { getMetaSyncRangeLabel, getStoredMetaSyncRange, isAggregateMetaSyncRange } from '../utils/metaSyncRange';
 
 const FORECAST_DATA = [
   { day: 'Mon', profit: 40 },
@@ -250,6 +252,7 @@ function CreateCampaignModal({
 
 export default function DashboardPage() {
   const { theme } = useTheme();
+  const { currentWorkspace } = useWorkspace();
   const {
     adsData,
     insights,
@@ -262,18 +265,34 @@ export default function DashboardPage() {
   } = useDatabase();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [creationMessage, setCreationMessage] = useState<string | null>(null);
+  const activeMetaSyncRange = getStoredMetaSyncRange(currentWorkspace?.id);
+  const activeMetaSyncRangeLabel = getMetaSyncRangeLabel(activeMetaSyncRange);
+  const prefersSnapshotMetrics = isAggregateMetaSyncRange(activeMetaSyncRange) || !workspaceSummary;
 
-  const totalSpend = workspaceSummary?.total_spend ?? adsData.reduce((acc, curr) => acc + curr.spend, 0);
-  const totalRevenue = workspaceSummary?.total_revenue ?? adsData.reduce((acc, curr) => acc + curr.revenue, 0);
-  const globalROAS = workspaceSummary
-    ? workspaceSummary.roas.toFixed(2)
-    : totalSpend > 0 ? (totalRevenue / totalSpend).toFixed(2) : '0';
-  const avgCTR = workspaceSummary
-    ? workspaceSummary.average_ctr.toFixed(2)
-    : adsData.length > 0 ? (adsData.reduce((acc, curr) => acc + curr.CTR, 0) / adsData.length).toFixed(2) : '0';
-  const avgCPM = workspaceSummary
-    ? workspaceSummary.average_cpm.toFixed(2)
-    : adsData.length > 0 ? (adsData.reduce((acc, curr) => acc + curr.CPM, 0) / adsData.length).toFixed(2) : '0';
+  const snapshotTotals = useMemo(() => ({
+    spend: adsData.reduce((acc, curr) => acc + curr.spend, 0),
+    revenue: adsData.reduce((acc, curr) => acc + curr.revenue, 0),
+    avgCtr: adsData.length > 0 ? adsData.reduce((acc, curr) => acc + curr.CTR, 0) / adsData.length : 0,
+    avgCpm: adsData.length > 0 ? adsData.reduce((acc, curr) => acc + curr.CPM, 0) / adsData.length : 0,
+  }), [adsData]);
+
+  const totalSpend = prefersSnapshotMetrics ? snapshotTotals.spend : (workspaceSummary?.total_spend ?? snapshotTotals.spend);
+  const totalRevenue = prefersSnapshotMetrics ? snapshotTotals.revenue : (workspaceSummary?.total_revenue ?? snapshotTotals.revenue);
+  const globalROAS = prefersSnapshotMetrics
+    ? (totalSpend > 0 ? (totalRevenue / totalSpend).toFixed(2) : '0')
+    : workspaceSummary
+      ? workspaceSummary.roas.toFixed(2)
+      : (totalSpend > 0 ? (totalRevenue / totalSpend).toFixed(2) : '0');
+  const avgCTR = prefersSnapshotMetrics
+    ? snapshotTotals.avgCtr.toFixed(2)
+    : workspaceSummary
+      ? workspaceSummary.average_ctr.toFixed(2)
+      : snapshotTotals.avgCtr.toFixed(2);
+  const avgCPM = prefersSnapshotMetrics
+    ? snapshotTotals.avgCpm.toFixed(2)
+    : workspaceSummary
+      ? workspaceSummary.average_cpm.toFixed(2)
+      : snapshotTotals.avgCpm.toFixed(2);
 
   const forecastData = workspaceSummaryHistory.length > 0
     ? [...workspaceSummaryHistory]
@@ -420,6 +439,9 @@ export default function DashboardPage() {
           <p className="mt-3 max-w-3xl text-sm font-medium text-on-surface-variant">
             Manage campaigns, read live Meta Ads performance, surface creative winners, and decide which campaigns should scale, pause, or stop.
           </p>
+          <p className="mt-3 text-xs font-bold uppercase tracking-[0.18em] text-on-surface-variant">
+            Active Meta sync window: {activeMetaSyncRangeLabel}
+          </p>
         </div>
 
         <button
@@ -493,6 +515,12 @@ export default function DashboardPage() {
           />
         ))}
       </div>
+
+      {prefersSnapshotMetrics && (
+        <div className="mb-12 rounded-[1.5rem] border border-outline-variant/25 bg-surface-container-low px-5 py-4 text-sm text-on-surface-variant">
+          Dashboard totals are following the latest synced Meta snapshot for <span className="font-bold text-on-surface">{activeMetaSyncRangeLabel}</span>, so they stay aligned with your broader Campaigns totals.
+        </div>
+      )}
 
       <section className="mb-16">
         <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">

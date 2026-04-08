@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import type { MetaSyncRange } from '../utils/metaSyncRange';
 
 type ErrorResult = {
   ok: false;
@@ -34,6 +35,15 @@ type SelectMetaAccountResult =
       error?: undefined;
       success: true;
       selectedAccount: { id: string; name: string };
+    };
+
+type UpdateMetaAccountFundsResult =
+  | ErrorResult
+  | {
+      ok: true;
+      error?: undefined;
+      success: true;
+      manualAvailableFunds: number | null;
     };
 
 type SyncMetaAccountResult =
@@ -119,6 +129,34 @@ type SyncMetaAccountResult =
         actionLabel: string;
         platform?: 'meta' | 'google';
       }>;
+      leads: Array<{
+        id: string;
+        workspace_id?: string;
+        name: string;
+        source: 'meta' | 'google';
+        campaign: string;
+        value: number;
+        status: 'new' | 'contacted' | 'qualified' | 'won' | 'lost';
+        date: string;
+        score: 'high' | 'medium' | 'low';
+        insight: string;
+        recommendedAction: string;
+        notes?: string;
+        creative_name: string;
+        creative_type: 'video' | 'image';
+        hook_tag?: string;
+        adset_name?: string;
+        quality_score: 'high' | 'medium' | 'low';
+        ctr: number;
+        cpl: number;
+        conversionRate: number;
+      }>;
+      leadSync: {
+        forms: number;
+        leadsDiscovered: number;
+        synced: number;
+        error: string | null;
+      };
     };
 
 type SyncGoogleAdsResult =
@@ -256,7 +294,46 @@ export const selectPrimaryMetaAdAccount = async (
   }
 };
 
+export const updateMetaAdAccountManualFunds = async (
+  workspaceId: string,
+  adAccountId: string,
+  manualAvailableFunds: number | null
+): Promise<UpdateMetaAccountFundsResult> => {
+  try {
+    const accessToken = await getAccessToken();
+
+    const response = await fetch('/api/meta-update-account', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ workspaceId, adAccountId, manualAvailableFunds }),
+    });
+
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      return { ok: false, error: payload.error || 'Failed to update Meta account funds.' };
+    }
+
+    return {
+      ok: true,
+      success: true,
+      manualAvailableFunds: payload.manualAvailableFunds as number | null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to update Meta account funds.',
+    };
+  }
+};
+
 export const syncPrimaryMetaAccount = async (workspaceId: string): Promise<SyncMetaAccountResult> => {
+  return syncPrimaryMetaAccountWithRange(workspaceId, 'today');
+};
+
+export const syncPrimaryMetaAccountWithRange = async (workspaceId: string, syncRange: MetaSyncRange): Promise<SyncMetaAccountResult> => {
   try {
     const accessToken = await getAccessToken();
 
@@ -266,7 +343,7 @@ export const syncPrimaryMetaAccount = async (workspaceId: string): Promise<SyncM
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ workspaceId }),
+      body: JSON.stringify({ workspaceId, syncRange }),
     });
 
     const payload = await readJsonResponse(response);
@@ -354,6 +431,34 @@ export const syncPrimaryMetaAccount = async (workspaceId: string): Promise<SyncM
         actionLabel: string;
         platform?: 'meta' | 'google';
       }>,
+      leads: payload.leads as Array<{
+        id: string;
+        workspace_id?: string;
+        name: string;
+        source: 'meta' | 'google';
+        campaign: string;
+        value: number;
+        status: 'new' | 'contacted' | 'qualified' | 'won' | 'lost';
+        date: string;
+        score: 'high' | 'medium' | 'low';
+        insight: string;
+        recommendedAction: string;
+        notes?: string;
+        creative_name: string;
+        creative_type: 'video' | 'image';
+        hook_tag?: string;
+        adset_name?: string;
+        quality_score: 'high' | 'medium' | 'low';
+        ctr: number;
+        cpl: number;
+        conversionRate: number;
+      }>,
+      leadSync: payload.leadSync as {
+        forms: number;
+        leadsDiscovered: number;
+        synced: number;
+        error: string | null;
+      },
     };
   } catch (error) {
     return {

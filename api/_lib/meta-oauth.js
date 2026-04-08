@@ -23,6 +23,7 @@ export const buildMetaOAuthUrl = ({ state }) => {
   url.searchParams.set('scope', [
     'ads_read',
     'business_management',
+    'leads_retrieval',
   ].join(','));
   return url.toString();
 };
